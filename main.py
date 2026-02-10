@@ -37,13 +37,8 @@ Bot = Client(
     api_hash=os.environ["API_HASH"]
 )
 
-# Channels to CHECK membership (USERNAME or CHANNEL ID)
-FORCE_CHANNELS = [
-    "@freefirepanellinks"
-]
-
-# Links to SHOW to user (invite links allowed)
-FORCE_JOIN_BUTTONS = [
+# Channels to SHOW (no checking)
+JOIN_BUTTONS = [
     ("Join Channel 1", "https://t.me/+wMO973O29JEyNzRl"),
     ("Join Channel 2", "https://t.me/freefirepanellinks"),
 ]
@@ -68,35 +63,26 @@ def shorten_with_tvkurl(long_url: str) -> str:
         pass
     return long_url
 
-async def is_joined(bot, user_id: int) -> bool:
-    try:
-        for channel in FORCE_CHANNELS:
-            member = await bot.get_chat_member(channel, user_id)
-            if member.status not in ("member", "administrator", "creator"):
-                return False
-        return True
-    except:
-        return False
-
 # ───────────────── /start ───────────────── #
 @Bot.on_message(filters.command("start") & filters.private)
 async def start(bot, message):
     user_id = message.from_user.id
     ensure_user(user_id)
 
-    if not await is_joined(bot, user_id):
-        buttons = [
-            [InlineKeyboardButton(text, url=url)]
-            for text, url in FORCE_JOIN_BUTTONS
-        ]
-        buttons.append([InlineKeyboardButton("Verify ✅", callback_data="verify_join")])
-
-        return await message.reply(
-            "🚫 **Join all channels to use this bot**",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+    buttons = [
+        [InlineKeyboardButton(text, url=url)]
+        for text, url in JOIN_BUTTONS
+    ]
+    buttons.append([InlineKeyboardButton("Verify ✅", callback_data="verified")])
 
     await message.reply(
+        "👇 **Join the channels below**\nThen click **Verify**",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+@Bot.on_callback_query(filters.regex("^verified$"))
+async def verified(bot, query):
+    await query.message.edit_text(
         "✅ **Bot is Alive**\n\n"
         "**Commands:**\n"
         "/start\n"
@@ -104,13 +90,6 @@ async def start(bot, message):
         "/genkey\n"
         "/key <KEY>"
     )
-
-@Bot.on_callback_query(filters.regex("^verify_join$"))
-async def verify_join(bot, query):
-    if await is_joined(bot, query.from_user.id):
-        await query.message.edit_text("✅ Verified! Use /start")
-    else:
-        await query.answer("❌ Join all channels first", show_alert=True)
 
 # ───────────────── /setinfo ───────────────── #
 @Bot.on_message(filters.command("setinfo") & filters.private)
