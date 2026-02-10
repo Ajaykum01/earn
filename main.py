@@ -2,11 +2,9 @@ import os
 import threading
 import random
 import string
-import asyncio
-import aiohttp
-import urllib.parse
 import re
-import aiohttp
+import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -40,8 +38,8 @@ Bot = Client(
 )
 
 FORCE_SUB_LINKS = [
-    "https://t.me/+wMO973O29JEyNzRl",
-    "https://t.me/freefirepanellinks",
+    "https://telegram.me/+Iyc7cjYrBpxlOWM1",
+    "https://telegram.me/+poyQjeODmb0wMjhl",
 ]
 
 # ───────────────── Helpers ───────────────── #
@@ -52,12 +50,24 @@ def ensure_user(user_id: int):
 def gen_key(length=6):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
+def shorten_with_tvkurl(long_url: str) -> str:
+    try:
+        encoded = urllib.parse.quote_plus(long_url)
+        api = f"https://tvkurl.site/api?api=9986767adc94f9d0a46a66fe436a9ba577c74f1f&url={encoded}&format=text"
+        with urllib.request.urlopen(api, timeout=15) as r:
+            result = r.read().decode().strip()
+            if result.startswith("http"):
+                return result
+    except:
+        pass
+    return long_url
+
 async def is_joined(bot, user_id):
     try:
         for link in FORCE_SUB_LINKS:
             chat = link.split("/")[-1]
-            member = await bot.get_chat_member(chat, user_id)
-            if member.status not in ["member", "administrator", "creator"]:
+            m = await bot.get_chat_member(chat, user_id)
+            if m.status not in ["member", "administrator", "creator"]:
                 return False
         return True
     except:
@@ -80,7 +90,7 @@ async def start(bot, message):
     await message.reply(
         "✅ **Bot is Alive**\n\n"
         "**Commands:**\n"
-        "/start – Check bot\n"
+        "/start\n"
         "/setinfo <user_id>\n"
         "/genkey\n"
         "/key <KEY>"
@@ -150,14 +160,14 @@ async def use_key(bot, message):
 
 # ───────────────── Admin ───────────────── #
 @Bot.on_message(filters.command("ongenkey") & filters.private)
-async def on_genkey(bot, message):
+async def ongen(bot, message):
     if message.from_user.id not in ADMINS:
         return
     settings_collection.update_one({"_id": "genkey"}, {"$set": {"enabled": True}})
     await message.reply("✅ /genkey Enabled")
 
 @Bot.on_message(filters.command("offgenkey") & filters.private)
-async def off_genkey(bot, message):
+async def offgen(bot, message):
     if message.from_user.id not in ADMINS:
         return
     settings_collection.update_one({"_id": "genkey"}, {"$set": {"enabled": False}})
@@ -182,9 +192,8 @@ async def group_filter(bot, message):
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Bot is Alive!")
+        self.wfile.write(b"Bot is Alive")
 
 def run_server():
     HTTPServer(("0.0.0.0", 8080), HealthCheckHandler).serve_forever()
