@@ -39,8 +39,8 @@ Bot = Client(
 )
 
 FORCE_SUB_LINKS = [
-    "https://telegram.me/+Iyc7cjYrBpxlOWM1",
-    "https://telegram.me/+poyQjeODmb0wMjhl",
+    "https://t.me/+wMO973O29JEyNzRl",
+    "https://t.me/freefirepanellinks",
 ]
 
 # ───────────────── Helpers ───────────────── #
