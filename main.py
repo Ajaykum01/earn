@@ -201,4 +201,4 @@ def run_server():
 # ───────────────── Main ───────────────── #
 if __name__ == "__main__":
     threading.Thread(target=run_server, daemon=True).start()
-    Bot.run(workers=1)
+    Bot.run()
