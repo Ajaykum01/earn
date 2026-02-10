@@ -37,9 +37,15 @@ Bot = Client(
     api_hash=os.environ["API_HASH"]
 )
 
-FORCE_SUB_LINKS = [
-    "https://t.me/+wMO973O29JEyNzRl",
-    "https://t.me/freefirepanellinks",
+# Channels to CHECK membership (USERNAME or CHANNEL ID)
+FORCE_CHANNELS = [
+    "@freefirepanellinks"
+]
+
+# Links to SHOW to user (invite links allowed)
+FORCE_JOIN_BUTTONS = [
+    ("Join Channel 1", "https://t.me/+wMO973O29JEyNzRl"),
+    ("Join Channel 2", "https://t.me/freefirepanellinks"),
 ]
 
 # ───────────────── Helpers ───────────────── #
@@ -62,12 +68,11 @@ def shorten_with_tvkurl(long_url: str) -> str:
         pass
     return long_url
 
-async def is_joined(bot, user_id):
+async def is_joined(bot, user_id: int) -> bool:
     try:
-        for link in FORCE_SUB_LINKS:
-            chat = link.split("/")[-1]
-            m = await bot.get_chat_member(chat, user_id)
-            if m.status not in ["member", "administrator", "creator"]:
+        for channel in FORCE_CHANNELS:
+            member = await bot.get_chat_member(channel, user_id)
+            if member.status not in ("member", "administrator", "creator"):
                 return False
         return True
     except:
@@ -80,8 +85,12 @@ async def start(bot, message):
     ensure_user(user_id)
 
     if not await is_joined(bot, user_id):
-        buttons = [[InlineKeyboardButton("Join Channel", url=url)] for url in FORCE_SUB_LINKS]
+        buttons = [
+            [InlineKeyboardButton(text, url=url)]
+            for text, url in FORCE_JOIN_BUTTONS
+        ]
         buttons.append([InlineKeyboardButton("Verify ✅", callback_data="verify_join")])
+
         return await message.reply(
             "🚫 **Join all channels to use this bot**",
             reply_markup=InlineKeyboardMarkup(buttons)
