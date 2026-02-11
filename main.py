@@ -38,8 +38,9 @@ Bot = Client(
 )
 
 JOIN_BUTTONS = [
-    ("Join Channel 1", "https://t.me/+wMO973O29JEyNzRl"),
+    ("Join Channel 1", "https://t.me/+-K09FAQa85I5MDc1"),
     ("Join Channel 2", "https://t.me/freefirepanellinks"),
+    ("Join Channel 3", "https://t.me/+wMO973O29JEyNzRl"),
 ]
 
 # ───────────────── Time Setup ───────────────── #
