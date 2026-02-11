@@ -39,8 +39,9 @@ Bot = Client(
 
 # Channels to SHOW (no checking)
 JOIN_BUTTONS = [
-    ("Join Channel 1", "https://t.me/+wMO973O29JEyNzRl"),
+    ("Join Channel 1", "https://t.me/+bTtZvd_xMrU5NWI1"),
     ("Join Channel 2", "https://t.me/freefirepanellinks"),
+    ("Join Channel 1", "https://t.me/+wMO973O29JEyNzRl")
 ]
 
 # ───────────────── Helpers ───────────────── #
