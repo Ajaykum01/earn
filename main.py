@@ -93,17 +93,29 @@ async def auto_delete(msg, sec):
     except:
         pass
 
-# ───────── GROUP LOCK ───────── #
-@Bot.on_message(filters.group & ~filters.command("genlink"))
+# ───────── GROUP LOCK (DELETE USER MESSAGES ONLY) ───────── #
+@Bot.on_message(filters.group)
 async def delete_group_messages(bot, m):
+
+    # Skip if message from bot itself
+    if m.from_user and m.from_user.is_bot:
+        return
+
+    # Skip admins
     if m.from_user and m.from_user.id in ADMINS:
         return
+
+    # Allow /genlink only
+    if m.text and m.text.startswith("/genlink"):
+        return
+
+    # Delete everything else
     try:
         await m.delete()
     except:
         pass
 
-# ───────── GENLINK ───────── #
+# ───────── GENLINK (TVKURL TOKEN SYSTEM) ───────── #
 @Bot.on_message(filters.command("genlink") & filters.group)
 async def genlink(bot, m):
     uid = m.from_user.id
@@ -114,10 +126,12 @@ async def genlink(bot, m):
 
     now = datetime.now(UTC)
 
+    # 2h30m cooldown
     if last_gen:
         if now - last_gen < timedelta(hours=2, minutes=30):
             return await m.reply("⏳ Wait 2h30m before generating again.")
 
+    # Generate reward token
     token = gen_token()
 
     rewards.insert_one({
@@ -133,19 +147,27 @@ async def genlink(bot, m):
         upsert=True
     )
 
+    # Create deep link
     me = await bot.get_me()
-    link = f"https://t.me/{me.username}?start=reward_{token}"
-    short = shorten(link)
+    deep_link = f"https://t.me/{me.username}?start=reward_{token}"
+
+    # Shorten using TVKURL
+    short_link = shorten(deep_link)
+
+    # Safety check (important)
+    if not short_link.startswith("http"):
+        short_link = deep_link
 
     msg = await m.reply(
-        "💰 Here is your ₹5 Reward Link\n⏱ Valid 30 minutes.",
+        "💰 Here is your ₹5 Reward Link\n\n"
+        "🔐 Complete the short link to receive reward.\n"
+        "⏱ Valid for 30 minutes only.",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔗 Open Link", url=short)]
+            [InlineKeyboardButton("🔗 Open Link", url=short_link)]
         ])
     )
 
     asyncio.create_task(auto_delete(msg, 1200))
-
 # ───────── START + CLAIM ───────── #
 @Bot.on_message(filters.command("start") & filters.private)
 async def start(bot, m):
