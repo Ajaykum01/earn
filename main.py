@@ -44,21 +44,30 @@ Bot = Client(
 # ───────── HELPERS ───────── #
 def ensure_user(uid):
     if not users.find_one({"_id": uid}):
-        users.insert_one({"_id": uid, "wallet": 0, "last_gen": None})
+        users.insert_one({
+            "_id": uid,
+            "wallet": 0,
+            "last_gen": None
+        })
 
 def withdraw_enabled():
     s = settings.find_one({"_id": "withdraw"})
     return s.get("enabled", False)
 
 def set_withdraw(value: bool):
-    settings.update_one({"_id": "withdraw"}, {"$set": {"enabled": value}}, upsert=True)
+    settings.update_one(
+        {"_id": "withdraw"},
+        {"$set": {"enabled": value}},
+        upsert=True
+    )
 
 def can_withdraw(uid, amount):
     if not withdraw_enabled():
         return False, "❌ Withdraw is OFF by admin."
     if amount < 100:
         return False, "❌ Minimum withdraw is ₹100."
-    if users.find_one({"_id": uid})["wallet"] < amount:
+    user = users.find_one({"_id": uid})
+    if not user or user.get("wallet", 0) < amount:
         return False, "❌ Insufficient balance."
     return True, None
 
@@ -95,11 +104,14 @@ async def genlink(bot, m):
     uid = m.from_user.id
     ensure_user(uid)
 
-    user = users.find_one({"_id": uid})
+    user = users.find_one({"_id": uid}) or {}
 
-    # Cooldown 2h30m
-    if user["last_gen"] and datetime.utcnow() - user["last_gen"] < timedelta(hours=2, minutes=30):
-        return await m.reply("⏳ Wait 2h30m before generating again.")
+    last_gen = user.get("last_gen")
+
+    # Cooldown check safely
+    if last_gen:
+        if datetime.utcnow() - last_gen < timedelta(hours=2, minutes=30):
+            return await m.reply("⏳ Wait 2h30m before generating again.")
 
     token = gen_token()
 
@@ -110,7 +122,11 @@ async def genlink(bot, m):
         "created_at": datetime.utcnow()
     })
 
-    users.update_one({"_id": uid}, {"$set": {"last_gen": datetime.utcnow()}})
+    users.update_one(
+        {"_id": uid},
+        {"$set": {"last_gen": datetime.utcnow()}},
+        upsert=True
+    )
 
     me = await bot.get_me()
     link = f"https://t.me/{me.username}?start=reward_{token}"
@@ -137,13 +153,13 @@ async def start(bot, m):
         if not data:
             return await m.reply("❌ Invalid token.")
 
-        if data["used"]:
+        if data.get("used"):
             return await m.reply("❌ Already used.")
 
-        if data["user"] != m.from_user.id:
+        if data.get("user") != m.from_user.id:
             return await m.reply("❌ This link is not yours.")
 
-        if datetime.utcnow() - data["created_at"] > timedelta(minutes=30):
+        if datetime.utcnow() - data.get("created_at") > timedelta(minutes=30):
             return await m.reply("❌ Token expired.")
 
         rewards.update_one({"token": token}, {"$set": {"used": True}})
@@ -157,7 +173,8 @@ async def start(bot, m):
 @Bot.on_message(filters.command("wallet") & filters.private)
 async def wallet(bot, m):
     ensure_user(m.from_user.id)
-    bal = users.find_one({"_id": m.from_user.id})["wallet"]
+    user = users.find_one({"_id": m.from_user.id})
+    bal = user.get("wallet", 0)
     status = "🟢 ENABLED" if withdraw_enabled() else "🔴 DISABLED"
 
     await m.reply(
@@ -217,7 +234,7 @@ async def approve(bot, q):
     wid = q.data.split("_")[1]
     data = withdraws.find_one({"_id": wid})
 
-    if not data or data["status"] != "pending":
+    if not data or data.get("status") != "pending":
         return
 
     users.update_one({"_id": data["user"]}, {"$inc": {"wallet": -data["amount"]}})
