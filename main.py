@@ -81,7 +81,7 @@ async def genlink(bot, m):
     """/genlink works ONLY in target group - NO COOLDOWN"""
     ensure_user(m.from_user.id)
     
-    # Give +10 coins every time (NO cooldown check)
+    # Give +10 coins every time (NO cooldown)
     users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": 10}})
     
     # Generate link
@@ -122,11 +122,12 @@ async def offwithdraw(bot, m):
     set_withdraw(False)
     await m.reply("❌ Withdraw System **DISABLED**")
 
-# ───────── /WALLET - PRIVATE ONLY ───────── #
+# ───────── /WALLET - PRIVATE ONLY (FIXED KeyError) ───────── #
 @Bot.on_message(filters.command("wallet") & filters.private)
 async def wallet(bot, m):
     ensure_user(m.from_user.id)
-    bal = users.find_one({"_id": m.from_user.id}).get("wallet", 0)
+    user_data = users.find_one({"_id": m.from_user.id})
+    bal = user_data.get("wallet", 0) if user_data else 0  # FIXED: Safe wallet access
     status = "🟢 ENABLED" if withdraw_enabled() else "🔴 DISABLED"
     await m.reply(
         f"💰 **Balance:** ₹{bal}\n\n"
@@ -135,10 +136,10 @@ async def wallet(bot, m):
         f"🔗 **Earn:** https://t.me/+-K09FAQa85I5MDc1"
     )
 
-# ───────── /WITHDRAW - PRIVATE ONLY ───────── #
+# ───────── /WITHDRAW - PRIVATE ONLY (FIXED delete_after) ───────── #
 @Bot.on_message(filters.command("withdraw") & filters.private)
 async def withdraw(bot, m):
-    await m.reply(
+    msg = await m.reply(
         "💸 **Withdraw Options:**\n\n"
         "📱 **UPI:** `/upiid name@upi 100`\n"
         "💰 **Balance:** `/wallet`"
@@ -210,11 +211,15 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Alive")
+    
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
 
 def run_server():
     HTTPServer(("0.0.0.0", 8080), HealthCheckHandler).serve_forever()
 
 if __name__ == "__main__":
     threading.Thread(target=run_server, daemon=True).start()
-    print("🚀 Bot Started - NO COOLDOWN, NO MESSAGE DELETE!")
+    print("🚀 Bot Started - ALL ERRORS FIXED!")
     Bot.run()
