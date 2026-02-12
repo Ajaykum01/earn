@@ -30,8 +30,12 @@ ADMINS = [int(x) for x in os.getenv("ADMINS", "").split()]
 
 IST = pytz.timezone("Asia/Kolkata")
 
-if not settings.find_one({"_id": "wallet"}):
-    settings.insert_one({"_id": "wallet", "enabled": False})
+# Ensure wallet setting exists
+settings.update_one(
+    {"_id": "wallet"},
+    {"$setOnInsert": {"enabled": False}},
+    upsert=True
+)
 
 # ───────── BOT ───────── #
 Bot = Client(
@@ -47,7 +51,15 @@ def ensure_user(uid):
         users.insert_one({"_id": uid, "wallet": 0, "last_gen": None})
 
 def wallet_enabled():
-    return settings.find_one({"_id": "wallet"})["enabled"]
+    s = settings.find_one({"_id": "wallet"})
+    return s.get("enabled", False)
+
+def set_wallet(value: bool):
+    settings.update_one(
+        {"_id": "wallet"},
+        {"$set": {"enabled": value}},
+        upsert=True
+    )
 
 def is_withdraw_day():
     now = datetime.now(IST)
@@ -55,13 +67,13 @@ def is_withdraw_day():
 
 def can_withdraw(uid, amount):
     if not wallet_enabled():
-        return False, "Withdraw is OFF by admin."
+        return False, "❌ Withdraw is OFF by admin."
     if not is_withdraw_day():
-        return False, "Withdraw allowed only on 1st & 2nd."
+        return False, "❌ Withdraw allowed only on 1st & 2nd."
     if amount < 100:
-        return False, "Minimum withdraw is ₹100."
+        return False, "❌ Minimum withdraw is ₹100."
     if users.find_one({"_id": uid})["wallet"] < amount:
-        return False, "Insufficient balance."
+        return False, "❌ Insufficient balance."
     return True, None
 
 def gen_token(n=8):
@@ -87,64 +99,29 @@ async def start(bot, m):
     ensure_user(m.from_user.id)
     await m.reply("👋 Welcome! Use /wallet to see earnings.")
 
-# ───────── GROUP LOCK ───────── #
-@Bot.on_message(filters.group & ~filters.command("genlink"))
-async def delete_other(bot, m):
-    if m.from_user and m.from_user.id in ADMINS:
-        return
-    try:
-        await m.delete()
-    except:
-        pass
+# ───────── ADMIN WALLET SWITCH ───────── #
+@Bot.on_message(filters.command("onwallet") & filters.private)
+async def onwallet(bot, m):
+    if m.from_user.id not in ADMINS:
+        return await m.reply("❌ Admin only.")
 
-# ───────── GENLINK ───────── #
-@Bot.on_message(filters.command("genlink") & filters.group)
-async def genlink(bot, m):
-    uid = m.from_user.id
-    ensure_user(uid)
+    set_wallet(True)
+    await m.reply("✅ Withdraw System ENABLED")
 
-    user = users.find_one({"_id": uid})
+@Bot.on_message(filters.command("offwallet") & filters.private)
+async def offwallet(bot, m):
+    if m.from_user.id not in ADMINS:
+        return await m.reply("❌ Admin only.")
 
-    if user["last_gen"] and datetime.utcnow() - user["last_gen"] < timedelta(hours=2, minutes=30):
-        return await m.reply("⏳ Wait 2hr30min before generating again.")
-
-    token = gen_token()
-    rewards.insert_one({"token": token, "user": uid, "used": False})
-
-    users.update_one({"_id": uid}, {"$set": {"last_gen": datetime.utcnow()}})
-
-    me = await bot.get_me()
-    short = shorten(f"https://t.me/{me.username}?start=reward_{token}")
-
-    msg = await m.reply(
-        "💰 Here is your ₹5 Key Token",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Open Link", url=short)]])
-    )
-
-    asyncio.create_task(auto_delete(msg, 1200))
-
-# ───────── CLAIM ₹5 ───────── #
-@Bot.on_message(filters.private & filters.command("start"))
-async def claim(bot, m):
-    ensure_user(m.from_user.id)
-
-    if len(m.command) > 1 and m.command[1].startswith("reward_"):
-        token = m.command[1].split("_")[1]
-        r = rewards.find_one({"token": token})
-
-        if not r or r["used"] or r["user"] != m.from_user.id:
-            return await m.reply("❌ Invalid or used.")
-
-        rewards.update_one({"token": token}, {"$set": {"used": True}})
-        users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": 5}})
-
-        return await m.reply("✅ ₹5 added!")
+    set_wallet(False)
+    await m.reply("❌ Withdraw System DISABLED")
 
 # ───────── WALLET ───────── #
 @Bot.on_message(filters.command("wallet") & filters.private)
 async def wallet(bot, m):
     ensure_user(m.from_user.id)
     bal = users.find_one({"_id": m.from_user.id})["wallet"]
+
     status = "🟢 ENABLED" if wallet_enabled() else "🔴 DISABLED"
 
     await m.reply(
@@ -184,9 +161,11 @@ async def upiid(bot, m):
          InlineKeyboardButton("❌ Reject", callback_data=f"reject_{wid}")]
     ])
 
-    await bot.send_message(ADMIN_CHANNEL,
-        f"Withdraw Request\nUser: {m.from_user.id}\nAmount: ₹{amt}\nUPI: {upi}",
-        reply_markup=buttons)
+    await bot.send_message(
+        ADMIN_CHANNEL,
+        f"💸 Withdraw Request\nUser: {m.from_user.id}\nAmount: ₹{amt}\nUPI: {upi}",
+        reply_markup=buttons
+    )
 
     await m.reply("✅ Request sent to admin.")
 
