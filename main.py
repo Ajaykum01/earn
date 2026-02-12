@@ -74,13 +74,17 @@ async def cleaner(bot, m):
         if m.from_user.id in ADMINS:
             is_admin = True
         else:
-            # Check if user is a group admin via chat member status
-            member = await bot.get_chat_member(m.chat.id, m.from_user.id)
-            if member.status in ["administrator", "creator"]:
-                is_admin = True
+            try:
+                # Check if user is a group admin via chat member status
+                member = await bot.get_chat_member(m.chat.id, m.from_user.id)
+                if member.status in ["administrator", "creator"]:
+                    is_admin = True
+            except Exception:
+                pass
 
     # If it's not an admin and not the bot, delete the message
-    if not is_admin and m.from_user.id != (await bot.get_me()).id:
+    me = await bot.get_me()
+    if not is_admin and m.from_user.id != me.id:
         try:
             await m.delete()
         except Exception:
@@ -96,22 +100,27 @@ async def genlink(bot, m):
     
     # Logic: Generate token and link without cooldown
     token = gen_token(10)
-    # Store token in DB to verify later (simulated reward logic)
+    # Store token in DB to verify later
     rewards.insert_one({"uid": m.from_user.id, "token": token, "claimed": False})
     
     # Generate the earning link
-    raw_url = f"https://t.me/{(await bot.get_me()).username}?start=verify_{token}"
+    me = await bot.get_me()
+    raw_url = f"https://t.me/{me.username}?start=verify_{token}"
     short_url = shorten(raw_url)
     
     btn = InlineKeyboardMarkup([[InlineKeyboardButton("💰 Click to Earn", url=short_url)]])
     
-    sent = await m.reply(
+    await m.reply(
         f"👤 User: {m.from_user.mention}\n"
         f"🔗 Your link is ready. Click below to earn ₹5!",
         reply_markup=btn
     )
-    # Deletes the command message (if not already deleted by cleaner)
-    try: await m.delete() except: pass
+    
+    # Deletes the command message
+    try:
+        await m.delete()
+    except:
+        pass
 
 # ───────── START / VERIFY (PRIVATE ONLY) ───────── #
 @Bot.on_message(filters.command("start") & filters.private)
@@ -139,7 +148,8 @@ async def start(bot, m):
 @Bot.on_message(filters.command("wallet") & filters.private)
 async def wallet(bot, m):
     ensure_user(m.from_user.id)
-    bal = users.find_one({"_id": m.from_user.id})["wallet"]
+    user_data = users.find_one({"_id": m.from_user.id})
+    bal = user_data["wallet"] if user_data else 0
     status = "🟢 ENABLED" if withdraw_enabled() else "🔴 DISABLED"
     await m.reply(f"💰 Balance: ₹{bal}\n\nWithdraw Status: {status}\nMin Withdraw: ₹100")
 
@@ -157,7 +167,9 @@ async def upiid(bot, m):
     if not withdraw_enabled():
         return await m.reply("❌ Withdraw is currently disabled.")
     
-    bal = users.find_one({"_id": m.from_user.id})["wallet"]
+    user_data = users.find_one({"_id": m.from_user.id})
+    bal = user_data["wallet"] if user_data else 0
+    
     if amt < 100:
         return await m.reply("❌ Minimum ₹100 required.")
     if bal < amt:
@@ -188,7 +200,10 @@ async def approve(bot, q):
     users.update_one({"_id": data["user"]}, {"$inc": {"wallet": -data["amount"]}})
     withdraws.update_one({"_id": wid}, {"$set": {"status": "approved"}})
     
-    try: await bot.send_message(data["user"], "✅ Your withdraw has been Approved!") except: pass
+    try: 
+        await bot.send_message(data["user"], "✅ Your withdraw has been Approved!") 
+    except: 
+        pass
     await q.message.edit_text(q.message.text + "\n\n✅ APPROVED")
 
 @Bot.on_callback_query(filters.regex("^reject_"))
