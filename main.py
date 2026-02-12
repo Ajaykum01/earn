@@ -114,7 +114,7 @@ async def genlink(bot, m):
     short = shorten(f"https://t.me/{me.username}?start=reward_{token}")
 
     msg = await m.reply(
-        "💰 Here is your ₹5 Key Token\n⏱ Valid for 30 minutes.",
+        "💰 Here is your ₹1.5 Key Token\n⏱ Valid for 30 minutes.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔗 Open Link", url=short)]
         ])
@@ -138,11 +138,11 @@ async def start(bot, m):
             return await m.reply("❌ Token expired.")
 
         rewards.update_one({"token": token}, {"$set": {"used": True}})
-        users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": 5}})
+        users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": 1.5}})
 
-        return await m.reply("✅ ₹5 added to your wallet!")
+        return await m.reply("✅ ₹1.5 added to your wallet!")
 
-    await m.reply("👋 Welcome! Use /wallet to see earnings.")
+    await m.reply("👋 Welcome! Use /wallet to see earnings. /withdraw to send earnings to your accounts")
 
 # ───────── WALLET ───────── #
 @Bot.on_message(filters.command("wallet") & filters.private)
@@ -151,7 +151,7 @@ async def wallet(bot, m):
     bal = users.find_one({"_id": m.from_user.id})["wallet"]
     status = "🟢 ENABLED" if withdraw_enabled() else "🔴 DISABLED"
 
-    await m.reply(f"💰 Balance: ₹{bal}\nWithdraw Status: {status}\nMinimum Withdraw: ₹100")
+    await m.reply(f"💰 Balance: ₹{bal}\nWithdraw Status: {status}\nMinimum Withdraw: ₹100\nWithdraw open every month satrting 1st and 2nd day")
 
 # ───────── WITHDRAW SWITCH ───────── #
 @Bot.on_message(filters.command("onwithdraw") & filters.private)
