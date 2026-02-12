@@ -30,7 +30,6 @@ ADMINS = [int(x) for x in os.getenv("ADMINS", "").split()]
 
 IST = pytz.timezone("Asia/Kolkata")
 
-# Default wallet setting
 if not settings.find_one({"_id": "wallet"}):
     settings.insert_one({"_id": "wallet", "enabled": False})
 
@@ -54,8 +53,8 @@ def is_withdraw_day():
     now = datetime.now(IST)
     return now.day in [1, 2]
 
-def gen_token(n=10):
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=n))
+def gen_token(n=8):
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=n))
 
 def shorten(url):
     try:
@@ -135,48 +134,47 @@ async def claim(bot, m):
 async def wallet(bot, m):
     ensure_user(m.from_user.id)
     bal = users.find_one({"_id": m.from_user.id})["wallet"]
-
     status = "🟢 ENABLED" if wallet_enabled() else "🔴 DISABLED"
 
-    msg = (
+    await m.reply(
         f"💰 Balance: ₹{bal}\n\n"
         f"Withdraw Status: {status}\n"
-        f"Withdraw Window: 1st – 2nd Every Month\n\n"
-        f"Minimum Withdraw: ₹100\n"
-        f"Methods:\n"
-        f"/upiid name@upi amount\n"
-        f"/gmail email amount"
+        f"Withdraw Window: 1st – 2nd Every Month\n"
+        f"Minimum Withdraw: ₹100"
     )
 
-    await m.reply(msg)
+# ───────── GIFT GENERATION (ADMIN) ───────── #
+@Bot.on_message(filters.command("gengift") & filters.private)
+async def gengift(bot, m):
+    if m.from_user.id not in ADMINS:
+        return await m.reply("❌ Admin Only")
 
-# ───────── WITHDRAW ───────── #
-def can_withdraw(uid, amount):
-    if not wallet_enabled():
-        return False, "Withdraw is OFF by admin."
-    if not is_withdraw_day():
-        return False, "Withdraw allowed only on 1st & 2nd."
-    if amount < 100:
-        return False, "Minimum withdraw is ₹100."
-    if users.find_one({"_id": uid})["wallet"] < amount:
-        return False, "Insufficient balance."
-    return True, None
+    amount = int(m.command[1])
+    count = int(m.command[2])
 
-@Bot.on_message(filters.command("upiid") & filters.private)
-async def upi(bot, m):
-    upi, amt = m.command[1], int(m.command[2])
-    ok, reason = can_withdraw(m.from_user.id, amt)
-    if not ok:
-        return await m.reply(reason)
+    codes = []
 
-    wid = gen_token()
-    withdraws.insert_one({"_id": wid, "user": m.from_user.id, "amount": amt, "status": "pending"})
+    for _ in range(count):
+        code = gen_token()
+        giftcodes.insert_one({"code": code, "amount": amount, "used": False})
+        codes.append(code)
 
-    btn = InlineKeyboardMarkup([[InlineKeyboardButton("Approve", callback_data=f"a_{wid}"),
-                                 InlineKeyboardButton("Reject", callback_data=f"r_{wid}")]])
+    await m.reply("🎁 Gift Codes Generated:\n\n" + "\n".join(codes))
 
-    await bot.send_message(ADMIN_CHANNEL, f"UPI Withdraw\nUser:{m.from_user.id}\n₹{amt}\nUPI:{upi}", reply_markup=btn)
-    await m.reply("✅ Sent to admin.")
+# ───────── REDEEM GIFT ───────── #
+@Bot.on_message(filters.command("redeemgift") & filters.private)
+async def redeemgift(bot, m):
+    code = m.command[1]
+
+    gift = giftcodes.find_one({"code": code})
+
+    if not gift or gift["used"]:
+        return await m.reply("❌ Invalid or Used Code")
+
+    giftcodes.update_one({"code": code}, {"$set": {"used": True}})
+    users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": gift["amount"]}})
+
+    await m.reply(f"🎉 ₹{gift['amount']} added to your wallet!")
 
 # ───────── ADMIN SWITCH ───────── #
 @Bot.on_message(filters.command("onwallet") & filters.private)
