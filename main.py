@@ -47,7 +47,8 @@ def ensure_user(uid):
         users.insert_one({"_id": uid, "wallet": 0, "last_gen": None})
 
 def withdraw_enabled():
-    return settings.find_one({"_id": "withdraw"}).get("enabled", False)
+    s = settings.find_one({"_id": "withdraw"})
+    return s.get("enabled", False)
 
 def set_withdraw(value: bool):
     settings.update_one({"_id": "withdraw"}, {"$set": {"enabled": value}}, upsert=True)
@@ -78,11 +79,11 @@ async def auto_delete(msg, sec):
     except:
         pass
 
-# ───────── GROUP LOCK (DELETE EVERYTHING EXCEPT /genlink) ───────── #
+# ───────── GROUP LOCK ───────── #
 @Bot.on_message(filters.group & ~filters.command("genlink"))
-async def delete_all(bot, m):
+async def delete_group_messages(bot, m):
     if m.from_user and m.from_user.id in ADMINS:
-        return  # allow admins to talk
+        return
     try:
         await m.delete()
     except:
@@ -96,6 +97,7 @@ async def genlink(bot, m):
 
     user = users.find_one({"_id": uid})
 
+    # Cooldown 2h30m
     if user["last_gen"] and datetime.utcnow() - user["last_gen"] < timedelta(hours=2, minutes=30):
         return await m.reply("⏳ Wait 2h30m before generating again.")
 
@@ -111,10 +113,11 @@ async def genlink(bot, m):
     users.update_one({"_id": uid}, {"$set": {"last_gen": datetime.utcnow()}})
 
     me = await bot.get_me()
-    short = shorten(f"https://t.me/{me.username}?start=reward_{token}")
+    link = f"https://t.me/{me.username}?start=reward_{token}"
+    short = shorten(link)
 
     msg = await m.reply(
-        "💰 Here is your ₹1.5 Key Token\n⏱ Valid for 30 minutes.",
+        "💰 Here is your ₹5 Reward Link\n⏱ Valid 30 minutes.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔗 Open Link", url=short)]
         ])
@@ -122,7 +125,7 @@ async def genlink(bot, m):
 
     asyncio.create_task(auto_delete(msg, 1200))
 
-# ───────── START / CLAIM ───────── #
+# ───────── START + CLAIM ───────── #
 @Bot.on_message(filters.command("start") & filters.private)
 async def start(bot, m):
     ensure_user(m.from_user.id)
@@ -131,18 +134,24 @@ async def start(bot, m):
         token = m.command[1].split("_")[1]
         data = rewards.find_one({"token": token})
 
-        if not data or data["used"] or data["user"] != m.from_user.id:
-            return await m.reply("❌ Invalid or used token.")
+        if not data:
+            return await m.reply("❌ Invalid token.")
+
+        if data["used"]:
+            return await m.reply("❌ Already used.")
+
+        if data["user"] != m.from_user.id:
+            return await m.reply("❌ This link is not yours.")
 
         if datetime.utcnow() - data["created_at"] > timedelta(minutes=30):
             return await m.reply("❌ Token expired.")
 
         rewards.update_one({"token": token}, {"$set": {"used": True}})
-        users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": 1.5}})
+        users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": 5}})
 
-        return await m.reply("✅ ₹1.5 added to your wallet!")
+        return await m.reply("✅ ₹5 added to your wallet!")
 
-    await m.reply("👋 Welcome! Use /wallet to see earnings. /withdraw to send earnings to your accounts")
+    await m.reply("👋 Welcome! Use /wallet to check balance.")
 
 # ───────── WALLET ───────── #
 @Bot.on_message(filters.command("wallet") & filters.private)
@@ -151,9 +160,80 @@ async def wallet(bot, m):
     bal = users.find_one({"_id": m.from_user.id})["wallet"]
     status = "🟢 ENABLED" if withdraw_enabled() else "🔴 DISABLED"
 
-    await m.reply(f"💰 Balance: ₹{bal}\nWithdraw Status: {status}\nMinimum Withdraw: ₹100\nWithdraw open every month satrting 1st and 2nd day")
+    await m.reply(
+        f"💰 Balance: ₹{bal}\n\n"
+        f"Withdraw Status: {status}\n"
+        f"Minimum Withdraw: ₹100"
+    )
 
-# ───────── WITHDRAW SWITCH ───────── #
+# ───────── WITHDRAW MENU ───────── #
+@Bot.on_message(filters.command("withdraw") & filters.private)
+async def withdraw(bot, m):
+    await m.reply(
+        "💸 Withdraw Options:\n\n"
+        "UPI → /upiid name@upi amount\n"
+        "Redeem → /gmail email amount"
+    )
+
+# ───────── UPI REQUEST ───────── #
+@Bot.on_message(filters.command("upiid") & filters.private)
+async def upiid(bot, m):
+    try:
+        upi, amt = m.command[1], int(m.command[2])
+    except:
+        return await m.reply("Usage: /upiid name@upi 100")
+
+    ok, reason = can_withdraw(m.from_user.id, amt)
+    if not ok:
+        return await m.reply(reason)
+
+    wid = gen_token()
+
+    withdraws.insert_one({
+        "_id": wid,
+        "user": m.from_user.id,
+        "amount": amt,
+        "status": "pending"
+    })
+
+    buttons = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{wid}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{wid}")
+        ]
+    ])
+
+    await bot.send_message(
+        ADMIN_CHANNEL,
+        f"💸 Withdraw Request\nUser: {m.from_user.id}\nAmount: ₹{amt}\nUPI: {upi}",
+        reply_markup=buttons
+    )
+
+    await m.reply("✅ Request sent to admin.")
+
+# ───────── APPROVE ───────── #
+@Bot.on_callback_query(filters.regex("^approve_"))
+async def approve(bot, q):
+    wid = q.data.split("_")[1]
+    data = withdraws.find_one({"_id": wid})
+
+    if not data or data["status"] != "pending":
+        return
+
+    users.update_one({"_id": data["user"]}, {"$inc": {"wallet": -data["amount"]}})
+    withdraws.update_one({"_id": wid}, {"$set": {"status": "approved"}})
+
+    await bot.send_message(data["user"], "✅ Withdraw Approved")
+    await q.message.edit_text(q.message.text + "\n\n✅ Approved")
+
+# ───────── REJECT ───────── #
+@Bot.on_callback_query(filters.regex("^reject_"))
+async def reject(bot, q):
+    wid = q.data.split("_")[1]
+    withdraws.update_one({"_id": wid}, {"$set": {"status": "rejected"}})
+    await q.message.edit_text(q.message.text + "\n\n❌ Rejected")
+
+# ───────── ADMIN SWITCH ───────── #
 @Bot.on_message(filters.command("onwithdraw") & filters.private)
 async def onwithdraw(bot, m):
     if m.from_user.id in ADMINS:
