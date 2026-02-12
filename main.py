@@ -5,7 +5,6 @@ import string
 import urllib.parse
 import urllib.request
 import asyncio
-import pytz
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -28,11 +27,9 @@ settings = db["settings"]
 ADMIN_CHANNEL = int(os.getenv("ADMIN_CHANNEL"))
 ADMINS = [int(x) for x in os.getenv("ADMINS", "").split()]
 
-IST = pytz.timezone("Asia/Kolkata")
-
-# Ensure wallet setting exists
+# Ensure withdraw setting exists
 settings.update_one(
-    {"_id": "wallet"},
+    {"_id": "withdraw"},
     {"$setOnInsert": {"enabled": False}},
     upsert=True
 )
@@ -50,26 +47,20 @@ def ensure_user(uid):
     if not users.find_one({"_id": uid}):
         users.insert_one({"_id": uid, "wallet": 0, "last_gen": None})
 
-def wallet_enabled():
-    s = settings.find_one({"_id": "wallet"})
+def withdraw_enabled():
+    s = settings.find_one({"_id": "withdraw"})
     return s.get("enabled", False)
 
-def set_wallet(value: bool):
+def set_withdraw(value: bool):
     settings.update_one(
-        {"_id": "wallet"},
+        {"_id": "withdraw"},
         {"$set": {"enabled": value}},
         upsert=True
     )
 
-def is_withdraw_day():
-    now = datetime.now(IST)
-    return now.day in [1, 2]
-
 def can_withdraw(uid, amount):
-    if not wallet_enabled():
+    if not withdraw_enabled():
         return False, "❌ Withdraw is OFF by admin."
-    if not is_withdraw_day():
-        return False, "❌ Withdraw allowed only on 1st & 2nd."
     if amount < 100:
         return False, "❌ Minimum withdraw is ₹100."
     if users.find_one({"_id": uid})["wallet"] < amount:
@@ -99,21 +90,21 @@ async def start(bot, m):
     ensure_user(m.from_user.id)
     await m.reply("👋 Welcome! Use /wallet to see earnings.")
 
-# ───────── ADMIN WALLET SWITCH ───────── #
-@Bot.on_message(filters.command("onwallet") & filters.private)
-async def onwallet(bot, m):
+# ───────── ADMIN WITHDRAW SWITCH ───────── #
+@Bot.on_message(filters.command("onwithdraw") & filters.private)
+async def onwithdraw(bot, m):
     if m.from_user.id not in ADMINS:
         return await m.reply("❌ Admin only.")
 
-    set_wallet(True)
+    set_withdraw(True)
     await m.reply("✅ Withdraw System ENABLED")
 
-@Bot.on_message(filters.command("offwallet") & filters.private)
-async def offwallet(bot, m):
+@Bot.on_message(filters.command("offwithdraw") & filters.private)
+async def offwithdraw(bot, m):
     if m.from_user.id not in ADMINS:
         return await m.reply("❌ Admin only.")
 
-    set_wallet(False)
+    set_withdraw(False)
     await m.reply("❌ Withdraw System DISABLED")
 
 # ───────── WALLET ───────── #
@@ -122,12 +113,11 @@ async def wallet(bot, m):
     ensure_user(m.from_user.id)
     bal = users.find_one({"_id": m.from_user.id})["wallet"]
 
-    status = "🟢 ENABLED" if wallet_enabled() else "🔴 DISABLED"
+    status = "🟢 ENABLED" if withdraw_enabled() else "🔴 DISABLED"
 
     await m.reply(
         f"💰 Balance: ₹{bal}\n\n"
         f"Withdraw Status: {status}\n"
-        f"Withdraw Window: 1st – 2nd Every Month\n"
         f"Minimum Withdraw: ₹100"
     )
 
