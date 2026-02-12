@@ -5,6 +5,7 @@ import string
 import urllib.parse
 import urllib.request
 import asyncio
+import pytz
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -22,9 +23,16 @@ users = db["users"]
 rewards = db["rewards"]
 withdraws = db["withdraws"]
 giftcodes = db["giftcodes"]
+settings = db["settings"]
 
 ADMIN_CHANNEL = int(os.getenv("ADMIN_CHANNEL"))
 ADMINS = [int(x) for x in os.getenv("ADMINS", "").split()]
+
+IST = pytz.timezone("Asia/Kolkata")
+
+# Default wallet setting
+if not settings.find_one({"_id": "wallet"}):
+    settings.insert_one({"_id": "wallet", "enabled": False})
 
 # ───────── BOT ───────── #
 Bot = Client(
@@ -38,6 +46,13 @@ Bot = Client(
 def ensure_user(uid):
     if not users.find_one({"_id": uid}):
         users.insert_one({"_id": uid, "wallet": 0, "last_gen": None})
+
+def wallet_enabled():
+    return settings.find_one({"_id": "wallet"})["enabled"]
+
+def is_withdraw_day():
+    now = datetime.now(IST)
+    return now.day in [1, 2]
 
 def gen_token(n=10):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=n))
@@ -60,10 +75,9 @@ async def auto_delete(msg, sec):
 @Bot.on_message(filters.command("start") & filters.private)
 async def start(bot, m):
     ensure_user(m.from_user.id)
+    await m.reply("👋 Welcome! Use /wallet to see earnings.")
 
-    await m.reply("👋 Welcome!\nUse /wallet to check balance.")
-
-# ───────── GROUP LOCK (ONLY /genlink) ───────── #
+# ───────── GROUP LOCK ───────── #
 @Bot.on_message(filters.group & ~filters.command("genlink"))
 async def delete_other(bot, m):
     if m.from_user and m.from_user.id in ADMINS:
@@ -73,7 +87,7 @@ async def delete_other(bot, m):
     except:
         pass
 
-# ───────── GENLINK (GROUP ONLY) ───────── #
+# ───────── GENLINK ───────── #
 @Bot.on_message(filters.command("genlink") & filters.group)
 async def genlink(bot, m):
     uid = m.from_user.id
@@ -90,20 +104,16 @@ async def genlink(bot, m):
     users.update_one({"_id": uid}, {"$set": {"last_gen": datetime.utcnow()}})
 
     me = await bot.get_me()
-    deep = f"https://t.me/{me.username}?start=reward_{token}"
-    short = shorten(deep)
+    short = shorten(f"https://t.me/{me.username}?start=reward_{token}")
 
     msg = await m.reply(
         "💰 Here is your ₹5 Key Token",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔗 Open Link", url=short)],
-            [InlineKeyboardButton("❓ How to Open", url="https://t.me")]
-        ])
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Open Link", url=short)]])
     )
 
     asyncio.create_task(auto_delete(msg, 1200))
 
-# ───────── CLAIM REWARD ───────── #
+# ───────── CLAIM ₹5 ───────── #
 @Bot.on_message(filters.private & filters.command("start"))
 async def claim(bot, m):
     ensure_user(m.from_user.id)
@@ -118,95 +128,68 @@ async def claim(bot, m):
         rewards.update_one({"token": token}, {"$set": {"used": True}})
         users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": 5}})
 
-        return await m.reply("✅ ₹5 added to wallet!")
+        return await m.reply("✅ ₹5 added!")
 
-# ───────── WALLET (PRIVATE ONLY) ───────── #
+# ───────── WALLET ───────── #
 @Bot.on_message(filters.command("wallet") & filters.private)
 async def wallet(bot, m):
     ensure_user(m.from_user.id)
     bal = users.find_one({"_id": m.from_user.id})["wallet"]
-    await m.reply(f"💰 Balance: ₹{bal}")
 
-# ───────── WITHDRAW MENU ───────── #
-@Bot.on_message(filters.command("withdraw") & filters.private)
-async def withdraw(bot, m):
-    await m.reply(
-        "Select Withdraw:\n\n"
-        "UPI → /upiid abc@upi 50\n"
-        "Redeem → /gmail mail@gmail.com 50"
+    status = "🟢 ENABLED" if wallet_enabled() else "🔴 DISABLED"
+
+    msg = (
+        f"💰 Balance: ₹{bal}\n\n"
+        f"Withdraw Status: {status}\n"
+        f"Withdraw Window: 1st – 2nd Every Month\n\n"
+        f"Minimum Withdraw: ₹100\n"
+        f"Methods:\n"
+        f"/upiid name@upi amount\n"
+        f"/gmail email amount"
     )
 
-# ───────── WITHDRAW REQUEST ───────── #
-async def send_admin(text, wid):
-    btn = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{wid}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{wid}")
-        ]
-    ])
-    await Bot.send_message(ADMIN_CHANNEL, text, reply_markup=btn)
+    await m.reply(msg)
+
+# ───────── WITHDRAW ───────── #
+def can_withdraw(uid, amount):
+    if not wallet_enabled():
+        return False, "Withdraw is OFF by admin."
+    if not is_withdraw_day():
+        return False, "Withdraw allowed only on 1st & 2nd."
+    if amount < 100:
+        return False, "Minimum withdraw is ₹100."
+    if users.find_one({"_id": uid})["wallet"] < amount:
+        return False, "Insufficient balance."
+    return True, None
 
 @Bot.on_message(filters.command("upiid") & filters.private)
 async def upi(bot, m):
     upi, amt = m.command[1], int(m.command[2])
+    ok, reason = can_withdraw(m.from_user.id, amt)
+    if not ok:
+        return await m.reply(reason)
+
     wid = gen_token()
-
     withdraws.insert_one({"_id": wid, "user": m.from_user.id, "amount": amt, "status": "pending"})
-    await send_admin(f"UPI Withdraw\nUser:{m.from_user.id}\nUPI:{upi}\n₹{amt}", wid)
-    await m.reply("✅ Sent for approval.")
 
-@Bot.on_message(filters.command("gmail") & filters.private)
-async def gmail(bot, m):
-    mail, amt = m.command[1], int(m.command[2])
-    wid = gen_token()
+    btn = InlineKeyboardMarkup([[InlineKeyboardButton("Approve", callback_data=f"a_{wid}"),
+                                 InlineKeyboardButton("Reject", callback_data=f"r_{wid}")]])
 
-    withdraws.insert_one({"_id": wid, "user": m.from_user.id, "amount": amt, "status": "pending"})
-    await send_admin(f"Redeem\nUser:{m.from_user.id}\nMail:{mail}\n₹{amt}", wid)
-    await m.reply("✅ Sent for approval.")
+    await bot.send_message(ADMIN_CHANNEL, f"UPI Withdraw\nUser:{m.from_user.id}\n₹{amt}\nUPI:{upi}", reply_markup=btn)
+    await m.reply("✅ Sent to admin.")
 
-# ───────── APPROVE / REJECT ───────── #
-@Bot.on_callback_query(filters.regex("^approve_"))
-async def approve(bot, q):
-    wid = q.data.split("_")[1]
-    data = withdraws.find_one({"_id": wid})
+# ───────── ADMIN SWITCH ───────── #
+@Bot.on_message(filters.command("onwallet") & filters.private)
+async def onwallet(bot, m):
+    if m.from_user.id in ADMINS:
+        settings.update_one({"_id": "wallet"}, {"$set": {"enabled": True}})
+        await m.reply("✅ Withdraw ENABLED")
 
-    if data and data["status"] == "pending":
-        users.update_one({"_id": data["user"]}, {"$inc": {"wallet": -data["amount"]}})
-        withdraws.update_one({"_id": wid}, {"$set": {"status": "approved"}})
-        await bot.send_message(data["user"], "✅ Withdraw Approved")
-
-@Bot.on_callback_query(filters.regex("^reject_"))
-async def reject(bot, q):
-    wid = q.data.split("_")[1]
-    withdraws.update_one({"_id": wid}, {"$set": {"status": "rejected"}})
-
-# ───────── GIFT SYSTEM ───────── #
-@Bot.on_message(filters.command("gengift") & filters.private)
-async def gengift(bot, m):
-    if m.from_user.id not in ADMINS:
-        return
-
-    amt, count = int(m.command[1]), int(m.command[2])
-
-    codes = []
-    for _ in range(count):
-        c = gen_token(8)
-        giftcodes.insert_one({"code": c, "amount": amt, "used": False})
-        codes.append(c)
-
-    await m.reply("\n".join(codes))
-
-@Bot.on_message(filters.command("redeemgift") & filters.private)
-async def redeemgift(bot, m):
-    code = m.command[1]
-    g = giftcodes.find_one({"code": code})
-
-    if not g or g["used"]:
-        return await m.reply("Invalid or used code.")
-
-    giftcodes.update_one({"code": code}, {"$set": {"used": True}})
-    users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": g["amount"]}})
-    await m.reply(f"🎁 ₹{g['amount']} added!")
+@Bot.on_message(filters.command("offwallet") & filters.private)
+async def offwallet(bot, m):
+    if m.from_user.id in ADMINS:
+        settings.update_one({"_id": "wallet"}, {"$set": {"enabled": False}})
+        await m.reply("❌ Withdraw DISABLED")
 
 # ───────── HEALTH CHECK ───────── #
 class HealthCheckHandler(BaseHTTPRequestHandler):
