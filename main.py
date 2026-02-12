@@ -28,11 +28,9 @@ ADMINS = [int(x) for x in os.getenv("ADMINS", "").split()]
 
 TVKURL_API = "9986767adc94f9d0a46a66fe436a9ba577c74f1f"
 
-settings.update_one(
-    {"_id": "withdraw"},
-    {"$setOnInsert": {"enabled": False}},
-    upsert=True
-)
+# Settings defaults
+settings.update_one({"_id": "withdraw"}, {"$setOnInsert": {"enabled": False}}, upsert=True)
+settings.update_one({"_id": "cooldown"}, {"$setOnInsert": {"enabled": True}}, upsert=True)
 
 # ───────── BOT ───────── #
 Bot = Client(
@@ -64,6 +62,35 @@ def shorten_with_tvkurl(long_url):
     except:
         return long_url
 
+def cooldown_enabled():
+    s = settings.find_one({"_id": "cooldown"})
+    return s.get("enabled", True)
+
+def set_cooldown(value: bool):
+    settings.update_one({"_id": "cooldown"}, {"$set": {"enabled": value}}, upsert=True)
+
+# ───────── AUTO DELETE GROUP MESSAGES ───────── #
+@Bot.on_message(filters.group)
+async def auto_delete_group(bot, m):
+
+    # Allow bot messages
+    if m.from_user and m.from_user.is_bot:
+        return
+
+    # Allow admin messages
+    if m.from_user and m.from_user.id in ADMINS:
+        return
+
+    # Allow /genlink
+    if m.text and m.text.startswith("/genlink"):
+        return
+
+    # Delete everything else
+    try:
+        await m.delete()
+    except:
+        pass
+
 
 # ───────── GENLINK ───────── #
 @Bot.on_message(filters.command("genlink"))
@@ -74,12 +101,13 @@ async def genlink(bot, m):
     user_data = users.find_one({"_id": m.from_user.id})
     now = datetime.utcnow()
 
-    # 1 Hour cooldown
-    last_gen = user_data.get("last_gen")
-    if last_gen and now - last_gen < timedelta(hours=1):
-        remaining = timedelta(hours=1) - (now - last_gen)
-        minutes = int(remaining.total_seconds() // 60)
-        return await m.reply(f"⏳ Wait {minutes} minutes before generating next link.")
+    # 1 Hour cooldown (only if enabled)
+    if cooldown_enabled():
+        last_gen = user_data.get("last_gen")
+        if last_gen and now - last_gen < timedelta(hours=1):
+            remaining = timedelta(hours=1) - (now - last_gen)
+            minutes = int(remaining.total_seconds() // 60)
+            return await m.reply(f"⏳ Wait {minutes} minutes before generating next link.")
 
     token = gen_token()
 
@@ -109,7 +137,7 @@ async def genlink(bot, m):
     )
 
 
-# ───────── CLAIM REWARD ───────── #
+# ───────── START + COMMAND LIST ───────── #
 @Bot.on_message(filters.command("start") & filters.private)
 async def start(bot, m):
 
@@ -137,7 +165,13 @@ async def start(bot, m):
 
         return await m.reply("✅ ₹1.5 added to your wallet!")
 
-    await m.reply("👋 Welcome! Use /genlink to earn.")
+    await m.reply(
+        "👋 Welcome!\n\n"
+        "📌 Commands:\n"
+        "/genlink - Generate earning link\n"
+        "/wallet - Check balance\n"
+        "/withdraw - Cash out earnings"
+    )
 
 
 # ───────── WALLET ───────── #
@@ -147,6 +181,22 @@ async def wallet(bot, m):
     user = users.find_one({"_id": m.from_user.id})
     bal = user.get("wallet", 0)
     await m.reply(f"💰 Your Balance: ₹{bal}")
+
+
+# ───────── COOLDOWN CONTROL ───────── #
+@Bot.on_message(filters.command("ontime") & filters.private)
+async def ontime(bot, m):
+    if m.from_user.id not in ADMINS:
+        return await m.reply("❌ Admin only.")
+    set_cooldown(True)
+    await m.reply("✅ 1 Hour Cooldown ENABLED")
+
+@Bot.on_message(filters.command("offtime") & filters.private)
+async def offtime(bot, m):
+    if m.from_user.id not in ADMINS:
+        return await m.reply("❌ Admin only.")
+    set_cooldown(False)
+    await m.reply("❌ 1 Hour Cooldown DISABLED")
 
 
 # ───────── WITHDRAW SYSTEM ───────── #
@@ -160,14 +210,11 @@ def set_withdraw(value: bool):
 def can_withdraw(uid, amount):
     if not withdraw_enabled():
         return False, "❌ Withdraw system is OFF."
-
     if amount < 100:
         return False, "❌ Minimum withdraw is ₹100."
-
     user = users.find_one({"_id": uid})
     if not user or user.get("wallet", 0) < amount:
         return False, "❌ Insufficient balance."
-
     return True, None
 
 
@@ -194,8 +241,7 @@ async def withdraw(bot, m):
 
     await m.reply(
         "💸 Withdraw Options:\n\n"
-        "Use:\n"
-        "/upiid name@upi amount\n\n"
+        "/upiid name@upi amount\n"
         "Example:\n"
         "/upiid abc@upi 100"
     )
@@ -279,5 +325,5 @@ def run_server():
 
 if __name__ == "__main__":
     threading.Thread(target=run_server, daemon=True).start()
-    print("🚀 Bot Running (TVKURL → Token Mode + Withdraw)")
+    print("🚀 Bot Running (Cooldown + AutoDelete Added)")
     Bot.run()
