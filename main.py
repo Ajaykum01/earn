@@ -10,21 +10,29 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from pymongo import MongoClient
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime
 
 load_dotenv()
 
 # ───────── DATABASE ───────── #
 client = MongoClient(os.getenv("MONGO_URL"))
 db = client["telegram_bot"]
-
 users = db["users"]
 rewards = db["rewards"]
+withdraws = db["withdraws"]
+settings = db["settings"]
 
-# 🔴 PUT YOUR GROUP ID HERE
-TARGET_GROUP_ID = -1003865283730  
-
+ADMIN_CHANNEL = int(os.getenv("ADMIN_CHANNEL"))
 ADMINS = [int(x) for x in os.getenv("ADMINS", "").split()]
+# The specific group ID where the bot should function
+ALLOWED_GROUP_ID = -1002341851502 # Extracted from your link
+
+# Ensure withdraw setting exists
+settings.update_one(
+    {"_id": "withdraw"},
+    {"$setOnInsert": {"enabled": False}},
+    upsert=True
+)
 
 # ───────── BOT ───────── #
 Bot = Client(
@@ -37,7 +45,11 @@ Bot = Client(
 # ───────── HELPERS ───────── #
 def ensure_user(uid):
     if not users.find_one({"_id": uid}):
-        users.insert_one({"_id": uid, "wallet": 0})
+        users.insert_one({"_id": uid, "wallet": 0, "last_gen": None})
+
+def withdraw_enabled():
+    s = settings.find_one({"_id": "withdraw"})
+    return s.get("enabled", False)
 
 def gen_token(n=8):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=n))
@@ -45,118 +57,157 @@ def gen_token(n=8):
 def shorten(url):
     try:
         api = f"https://tvkurl.site/api?api=9986767adc94f9d0a46a66fe436a9ba577c74f1f&url={urllib.parse.quote_plus(url)}"
-        result = urllib.request.urlopen(api, timeout=10).read().decode().strip()
-        if result.startswith("http"):
-            return result
-        return url
+        return urllib.request.urlopen(api).read().decode().strip()
     except:
         return url
 
-async def auto_delete(msg, sec):
-    await asyncio.sleep(sec)
-    try:
-        await msg.delete()
-    except:
-        pass
-
-# ───────── GROUP MESSAGE CONTROL ───────── #
-@Bot.on_message(filters.group)
-async def group_control(bot, m):
-
-    # Only allow specific group
-    if m.chat.id != TARGET_GROUP_ID:
+# ───────── AUTO CLEANER (DELETE NON-ADMIN MSGS) ───────── #
+@Bot.on_message(filters.group & ~filters.service)
+async def cleaner(bot, m):
+    # Only run in the specified group
+    if m.chat.id != ALLOWED_GROUP_ID:
         return
 
-    # Allow bot messages
-    if m.from_user and m.from_user.is_bot:
-        return
+    # Check if sender is Admin or the Bot itself
+    is_admin = False
+    if m.from_user:
+        if m.from_user.id in ADMINS:
+            is_admin = True
+        else:
+            # Check if user is a group admin via chat member status
+            member = await bot.get_chat_member(m.chat.id, m.from_user.id)
+            if member.status in ["administrator", "creator"]:
+                is_admin = True
 
-    # Allow admins
-    if m.from_user and m.from_user.id in ADMINS:
-        return
-
-    # Allow only /genlink
-    if m.text and m.text.startswith("/genlink"):
-        return
-
-    # Delete everything else
-    try:
-        await m.delete()
-    except:
-        pass
-
+    # If it's not an admin and not the bot, delete the message
+    if not is_admin and m.from_user.id != (await bot.get_me()).id:
+        try:
+            await m.delete()
+        except Exception:
+            pass
 
 # ───────── GENLINK (GROUP ONLY) ───────── #
 @Bot.on_message(filters.command("genlink") & filters.group)
 async def genlink(bot, m):
-
-    if m.chat.id != TARGET_GROUP_ID:
+    if m.chat.id != ALLOWED_GROUP_ID:
         return
-
-    uid = m.from_user.id
-    ensure_user(uid)
-
-    token = gen_token()
-
-    rewards.insert_one({
-        "token": token,
-        "user": uid,
-        "used": False,
-        "created_at": datetime.utcnow()
-    })
-
-    me = await bot.get_me()
-    deep_link = f"https://t.me/{me.username}?start=reward_{token}"
-    short_link = shorten(deep_link)
-
-    msg = await m.reply(
-        "💰 Here is your ₹5 Reward Link\n"
-        "🔐 Complete the link to receive reward.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔗 Open Link", url=short_link)]
-        ])
+    
+    ensure_user(m.from_user.id)
+    
+    # Logic: Generate token and link without cooldown
+    token = gen_token(10)
+    # Store token in DB to verify later (simulated reward logic)
+    rewards.insert_one({"uid": m.from_user.id, "token": token, "claimed": False})
+    
+    # Generate the earning link
+    raw_url = f"https://t.me/{(await bot.get_me()).username}?start=verify_{token}"
+    short_url = shorten(raw_url)
+    
+    btn = InlineKeyboardMarkup([[InlineKeyboardButton("💰 Click to Earn", url=short_url)]])
+    
+    sent = await m.reply(
+        f"👤 User: {m.from_user.mention}\n"
+        f"🔗 Your link is ready. Click below to earn ₹5!",
+        reply_markup=btn
     )
+    # Deletes the command message (if not already deleted by cleaner)
+    try: await m.delete() except: pass
 
-    asyncio.create_task(auto_delete(msg, 1200))
-
-
-# ───────── START + CLAIM ───────── #
+# ───────── START / VERIFY (PRIVATE ONLY) ───────── #
 @Bot.on_message(filters.command("start") & filters.private)
 async def start(bot, m):
-
     ensure_user(m.from_user.id)
-
-    if len(m.command) > 1 and m.command[1].startswith("reward_"):
-
+    
+    if len(m.command) > 1 and m.command[1].startswith("verify_"):
         token = m.command[1].split("_")[1]
-        data = rewards.find_one({"token": token})
+        data = rewards.find_one({"token": token, "claimed": False})
+        
+        if data:
+            if data["uid"] == m.from_user.id:
+                users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": 5}})
+                rewards.update_one({"token": token}, {"$set": {"claimed": True}})
+                await m.reply("✅ Success! ₹5 added to your wallet.")
+            else:
+                await m.reply("❌ This link belongs to someone else.")
+        else:
+            await m.reply("❌ Invalid or already used link.")
+        return
 
-        if not data:
-            return await m.reply("❌ Invalid token.")
+    await m.reply("👋 Welcome to Earn Bot!\n\nUse /wallet to check balance.\nUse /withdraw to cash out.")
 
-        if data["used"]:
-            return await m.reply("❌ Already used.")
+# ───────── WALLET & WITHDRAW (PRIVATE) ───────── #
+@Bot.on_message(filters.command("wallet") & filters.private)
+async def wallet(bot, m):
+    ensure_user(m.from_user.id)
+    bal = users.find_one({"_id": m.from_user.id})["wallet"]
+    status = "🟢 ENABLED" if withdraw_enabled() else "🔴 DISABLED"
+    await m.reply(f"💰 Balance: ₹{bal}\n\nWithdraw Status: {status}\nMin Withdraw: ₹100")
 
-        if data["user"] != m.from_user.id:
-            return await m.reply("❌ This link is not yours.")
+@Bot.on_message(filters.command("withdraw") & filters.private)
+async def withdraw(bot, m):
+    await m.reply("💸 Withdraw via UPI:\nUsage: `/upiid name@upi amount`", parse_mode="markdown")
 
-        rewards.update_one({"token": token}, {"$set": {"used": True}})
-        users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": 5}})
+@Bot.on_message(filters.command("upiid") & filters.private)
+async def upiid(bot, m):
+    try:
+        upi, amt = m.command[1], int(m.command[2])
+    except:
+        return await m.reply("Usage: /upiid name@upi 100")
 
-        return await m.reply("✅ ₹5 added to your wallet!")
+    if not withdraw_enabled():
+        return await m.reply("❌ Withdraw is currently disabled.")
+    
+    bal = users.find_one({"_id": m.from_user.id})["wallet"]
+    if amt < 100:
+        return await m.reply("❌ Minimum ₹100 required.")
+    if bal < amt:
+        return await m.reply("❌ Insufficient balance.")
 
-    await m.reply("👋 Welcome!")
+    wid = gen_token()
+    withdraws.insert_one({"_id": wid, "user": m.from_user.id, "amount": amt, "status": "pending"})
+    
+    buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{wid}"), 
+         InlineKeyboardButton("❌ Reject", callback_data=f"reject_{wid}")]
+    ])
+    
+    await bot.send_message(
+        ADMIN_CHANNEL, 
+        f"💸 New Request\nUser: `{m.from_user.id}`\nAmount: ₹{amt}\nUPI: `{upi}`", 
+        reply_markup=buttons
+    )
+    await m.reply("✅ Request sent to admin.")
 
-# ───────── HEALTH CHECK ───────── #
+# ───────── ADMIN CALLBACKS ───────── #
+@Bot.on_callback_query(filters.regex("^approve_"))
+async def approve(bot, q):
+    wid = q.data.split("_")[1]
+    data = withdraws.find_one({"_id": wid})
+    if not data or data["status"] != "pending": return
+    
+    users.update_one({"_id": data["user"]}, {"$inc": {"wallet": -data["amount"]}})
+    withdraws.update_one({"_id": wid}, {"$set": {"status": "approved"}})
+    
+    try: await bot.send_message(data["user"], "✅ Your withdraw has been Approved!") except: pass
+    await q.message.edit_text(q.message.text + "\n\n✅ APPROVED")
+
+@Bot.on_callback_query(filters.regex("^reject_"))
+async def reject(bot, q):
+    wid = q.data.split("_")[1]
+    withdraws.update_one({"_id": wid}, {"$set": {"status": "rejected"}})
+    await q.message.edit_text(q.message.text + "\n\n❌ REJECTED")
+
+# ───────── SERVER ───────── #
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Alive")
+        self.wfile.write(b"Bot is Running")
 
 def run_server():
     HTTPServer(("0.0.0.0", 8080), HealthCheckHandler).serve_forever()
 
 if __name__ == "__main__":
     threading.Thread(target=run_server, daemon=True).start()
+    print("Bot Started...")
     Bot.run()
