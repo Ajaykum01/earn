@@ -2,137 +2,119 @@ import os
 import threading
 import random
 import string
+import re
 import urllib.parse
 import urllib.request
-import asyncio
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from pymongo import MongoClient
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime
 
 load_dotenv()
 
-# ───────── DATABASE ───────── #
-client = MongoClient(os.getenv("MONGO_URL"))
+# ───────────────── MongoDB ───────────────── #
+MONGO_URL = os.getenv("MONGO_URL")
+client = MongoClient(MONGO_URL)
 db = client["telegram_bot"]
 
-users = db["users"]
-rewards = db["rewards"]
-withdraws = db["withdraws"]
-giftcodes = db["giftcodes"]
+users_collection = db["users"]
 
-ADMIN_CHANNEL = int(os.getenv("ADMIN_CHANNEL"))
-ADMINS = [int(x) for x in os.getenv("ADMINS", "").split()]
-
-# ───────── BOT ───────── #
+# ───────────────── Bot ───────────────── #
 Bot = Client(
-    "RewardBot",
+    "Play-Store-Bot",
     bot_token=os.environ["BOT_TOKEN"],
     api_id=int(os.environ["API_ID"]),
     api_hash=os.environ["API_HASH"]
 )
 
-# ───────── HELPERS ───────── #
-def ensure_user(uid):
-    if not users.find_one({"_id": uid}):
-        users.insert_one({"_id": uid, "wallet": 0, "last_gen": None})
+# Channels to SHOW (no checking)
+JOIN_BUTTONS = [
+    ("Join Channel 1", "https://t.me/+bTtZvd_xMrU5NWI1"),
+    ("Join Channel 2", "https://t.me/freefirepanellinks"),
+    ("Join Channel 3", "https://t.me/+wMO973O29JEyNzRl")
+]
 
-def gen_token(n=10):
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=n))
+# ───────────────── Helpers ───────────────── #
+def ensure_user(user_id: int):
+    if not users_collection.find_one({"_id": user_id}):
+        users_collection.insert_one({
+            "_id": user_id,
+            "joined_at": datetime.utcnow()
+        })
 
-def shorten(url):
+def shorten_with_tvkurl(long_url: str) -> str:
     try:
-        api = f"https://tvkurl.site/api?api=9986767adc94f9d0a46a66fe436a9ba577c74f1f&url={urllib.parse.quote_plus(url)}"
-        return urllib.request.urlopen(api).read().decode().strip()
-    except:
-        return url
-
-async def auto_delete(msg, sec):
-    await asyncio.sleep(sec)
-    try:
-        await msg.delete()
-    except:
-        pass
-
-# ───────── GROUP LOCK (ONLY /genlink ALLOWED) ───────── #
-@Bot.on_message(filters.group & ~filters.command("genlink"))
-async def delete_other_messages(bot, m):
-    if m.from_user and m.from_user.id in ADMINS:
-        return  # allow admins (remove this if not needed)
-
-    try:
-        await m.delete()
+        encoded = urllib.parse.quote_plus(long_url)
+        api = f"https://tvkurl.site/api?api=9986767adc94f9d0a46a66fe436a9ba577c74f1f&url={encoded}&format=text"
+        with urllib.request.urlopen(api, timeout=15) as r:
+            result = r.read().decode().strip()
+            if result.startswith("http"):
+                return result
     except:
         pass
+    return long_url
 
-# ───────── GENLINK (GROUP) ───────── #
-@Bot.on_message(filters.command("genlink") & filters.group)
-async def genlink(bot, m):
-    uid = m.from_user.id
-    ensure_user(uid)
+# ───────────────── /start ───────────────── #
+@Bot.on_message(filters.command("start") & filters.private)
+async def start(bot, message):
+    user_id = message.from_user.id
+    ensure_user(user_id)
 
-    user = users.find_one({"_id": uid})
+    buttons = [
+        [InlineKeyboardButton(text, url=url)]
+        for text, url in JOIN_BUTTONS
+    ]
+    buttons.append([InlineKeyboardButton("Verify ✅", callback_data="verified")])
 
-    if user["last_gen"] and datetime.utcnow() - user["last_gen"] < timedelta(hours=2, minutes=30):
-        return await m.reply("⏳ Wait 2hr30min before generating again.")
-
-    token = gen_token()
-
-    rewards.insert_one({"token": token, "user": uid, "used": False})
-    users.update_one({"_id": uid}, {"$set": {"last_gen": datetime.utcnow()}})
-
-    me = await bot.get_me()
-    deep = f"https://t.me/{me.username}?start=reward_{token}"
-    short = shorten(deep)
-
-    msg = await m.reply(
-        "💰 Here is your ₹5 Key Token",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔗 Open Link", url=short)],
-            [InlineKeyboardButton("❓ How to Open", url="https://t.me/freefirepanellinks")]
-        ])
+    await message.reply(
+        "👇 **Join the channels below**\nThen click **Verify**",
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-    asyncio.create_task(auto_delete(msg, 1200))
+@Bot.on_callback_query(filters.regex("^verified$"))
+async def verified(bot, query):
+    await query.message.edit_text(
+        "✅ **Bot is Alive**\n\n"
+        "You can now use the bot."
+    )
 
-# ───────── CLAIM REWARD ───────── #
-@Bot.on_message(filters.private & filters.command("start"))
-async def start(bot, m):
-    ensure_user(m.from_user.id)
+# ───────────────── Group Auto Delete ───────────────── #
+@Bot.on_message(filters.group & ~filters.service)
+async def group_filter(bot, message):
+    text = message.text or ""
 
-    if len(m.command) > 1 and m.command[1].startswith("reward_"):
-        token = m.command[1].split("_")[1]
-        r = rewards.find_one({"token": token})
+    # Allow numbers or tvkurl links only
+    if re.search(r"\d{5,}", text):
+        return
+    if re.search(r"(http|https).*tvkurl\.site", text):
+        return
 
-        if not r or r["used"] or r["user"] != m.from_user.id:
-            return await m.reply("❌ Invalid or already used.")
+    try:
+        await message.delete()
+    except:
+        pass
 
-        rewards.update_one({"token": token}, {"$set": {"used": True}})
-        users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": 5}})
+# ───────────────── Delete Join Messages ───────────────── #
+@Bot.on_message(filters.group & filters.service)
+async def delete_service(bot, message):
+    try:
+        await message.delete()
+    except:
+        pass
 
-        return await m.reply("✅ ₹5 added to wallet!")
-
-    await m.reply("👋 Welcome! Use /wallet")
-
-# ───────── WALLET ───────── #
-@Bot.on_message(filters.command("wallet"))
-async def wallet(bot, m):
-    ensure_user(m.from_user.id)
-    bal = users.find_one({"_id": m.from_user.id})["wallet"]
-    await m.reply(f"💰 Balance: ₹{bal}")
-
-# ───────── HEALTH CHECK ───────── #
+# ───────────────── Health Check ───────────────── #
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Alive")
+        self.wfile.write(b"Bot is Alive")
 
 def run_server():
     HTTPServer(("0.0.0.0", 8080), HealthCheckHandler).serve_forever()
 
+# ───────────────── Main ───────────────── #
 if __name__ == "__main__":
     threading.Thread(target=run_server, daemon=True).start()
     Bot.run()
