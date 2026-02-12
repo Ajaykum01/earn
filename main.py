@@ -29,9 +29,7 @@ ADMINS = [int(x) for x in os.getenv("ADMINS", "").split()]
 
 TVKURL_API = "9986767adc94f9d0a46a66fe436a9ba577c74f1f"
 
-# Default settings
 settings.update_one({"_id": "withdraw"}, {"$setOnInsert": {"enabled": False}}, upsert=True)
-settings.update_one({"_id": "cooldown"}, {"$setOnInsert": {"enabled": True}}, upsert=True)
 
 # ───────── BOT ───────── #
 Bot = Client(
@@ -159,6 +157,68 @@ async def wallet(bot, m):
     bal = user.get("wallet", 0)
     await m.reply(f"💰 Your Balance: ₹{bal}")
 
+# ───────── GIFT SYSTEM ───────── #
+
+@Bot.on_message(filters.command("gengift") & filters.private)
+async def gengift(bot, m):
+
+    if m.from_user.id not in ADMINS:
+        return await m.reply("❌ Admin only.")
+
+    try:
+        amount = float(m.command[1])
+        quantity = int(m.command[2])
+    except:
+        return await m.reply("Usage: /gengift amount quantity")
+
+    codes = []
+
+    for _ in range(quantity):
+        code = gen_token(10)
+        giftcodes.insert_one({
+            "code": code,
+            "amount": amount,
+            "used": False,
+            "used_by": None,
+            "created_at": datetime.utcnow()
+        })
+        codes.append(code)
+
+    await m.reply("🎁 Gift Codes Generated:\n\n" + "\n".join(codes))
+
+
+@Bot.on_message(filters.command("redeemgift") & filters.private)
+async def redeemgift(bot, m):
+
+    try:
+        code = m.command[1].strip().upper()
+    except:
+        return await m.reply("Usage: /redeemgift CODE")
+
+    gift = giftcodes.find_one({"code": code})
+
+    if not gift:
+        return await m.reply("❌ Invalid gift code.")
+
+    if gift["used"]:
+        return await m.reply("❌ Code redeemed by another user.")
+
+    giftcodes.update_one(
+        {"code": code},
+        {"$set": {
+            "used": True,
+            "used_by": m.from_user.id,
+            "used_at": datetime.utcnow()
+        }}
+    )
+
+    users.update_one(
+        {"_id": m.from_user.id},
+        {"$inc": {"wallet": gift["amount"]}}
+    )
+
+    await m.reply(f"✅ ₹{gift['amount']} added to your wallet!")
+
 # ───────── WITHDRAW SYSTEM ───────── #
 @Bot.on_message(filters.command("withdraw") & filters.private)
 async def withdraw(bot, m):
@@ -245,5 +305,5 @@ def run_server():
 
 if __name__ == "__main__":
     threading.Thread(target=run_server, daemon=True).start()
-    print("🚀 Bot Running (Withdraw Fixed)")
+    print("🚀 Bot Running (Gift + Withdraw Fixed)")
     Bot.run()
