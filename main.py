@@ -10,7 +10,7 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from pymongo import MongoClient
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 
 load_dotenv()
 
@@ -26,7 +26,6 @@ settings = db["settings"]
 ADMIN_CHANNEL = int(os.getenv("ADMIN_CHANNEL"))
 ADMINS = [int(x) for x in os.getenv("ADMINS", "").split()]
 
-# Ensure withdraw setting exists
 settings.update_one(
     {"_id": "withdraw"},
     {"$setOnInsert": {"enabled": False}},
@@ -77,7 +76,13 @@ def gen_token(n=8):
 def shorten(url):
     try:
         api = f"https://tvkurl.site/api?api=9986767adc94f9d0a46a66fe436a9ba577c74f1f&url={urllib.parse.quote_plus(url)}"
-        return urllib.request.urlopen(api).read().decode().strip()
+        result = urllib.request.urlopen(api, timeout=10).read().decode().strip()
+
+        # validate URL
+        if result.startswith("http://") or result.startswith("https://"):
+            return result
+        else:
+            return url
     except:
         return url
 
@@ -98,19 +103,19 @@ async def delete_group_messages(bot, m):
     except:
         pass
 
-# ───────── GENLINK (GROUP ONLY) ───────── #
+# ───────── GENLINK ───────── #
 @Bot.on_message(filters.command("genlink") & filters.group)
 async def genlink(bot, m):
     uid = m.from_user.id
     ensure_user(uid)
 
     user = users.find_one({"_id": uid}) or {}
-
     last_gen = user.get("last_gen")
 
-    # Cooldown check safely
+    now = datetime.now(UTC)
+
     if last_gen:
-        if datetime.utcnow() - last_gen < timedelta(hours=2, minutes=30):
+        if now - last_gen < timedelta(hours=2, minutes=30):
             return await m.reply("⏳ Wait 2h30m before generating again.")
 
     token = gen_token()
@@ -119,12 +124,12 @@ async def genlink(bot, m):
         "token": token,
         "user": uid,
         "used": False,
-        "created_at": datetime.utcnow()
+        "created_at": now
     })
 
     users.update_one(
         {"_id": uid},
-        {"$set": {"last_gen": datetime.utcnow()}},
+        {"$set": {"last_gen": now}},
         upsert=True
     )
 
@@ -159,7 +164,7 @@ async def start(bot, m):
         if data.get("user") != m.from_user.id:
             return await m.reply("❌ This link is not yours.")
 
-        if datetime.utcnow() - data.get("created_at") > timedelta(minutes=30):
+        if datetime.now(UTC) - data.get("created_at") > timedelta(minutes=30):
             return await m.reply("❌ Token expired.")
 
         rewards.update_one({"token": token}, {"$set": {"used": True}})
@@ -182,86 +187,6 @@ async def wallet(bot, m):
         f"Withdraw Status: {status}\n"
         f"Minimum Withdraw: ₹100"
     )
-
-# ───────── WITHDRAW MENU ───────── #
-@Bot.on_message(filters.command("withdraw") & filters.private)
-async def withdraw(bot, m):
-    await m.reply(
-        "💸 Withdraw Options:\n\n"
-        "UPI → /upiid name@upi amount\n"
-        "Redeem → /gmail email amount"
-    )
-
-# ───────── UPI REQUEST ───────── #
-@Bot.on_message(filters.command("upiid") & filters.private)
-async def upiid(bot, m):
-    try:
-        upi, amt = m.command[1], int(m.command[2])
-    except:
-        return await m.reply("Usage: /upiid name@upi 100")
-
-    ok, reason = can_withdraw(m.from_user.id, amt)
-    if not ok:
-        return await m.reply(reason)
-
-    wid = gen_token()
-
-    withdraws.insert_one({
-        "_id": wid,
-        "user": m.from_user.id,
-        "amount": amt,
-        "status": "pending"
-    })
-
-    buttons = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{wid}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{wid}")
-        ]
-    ])
-
-    await bot.send_message(
-        ADMIN_CHANNEL,
-        f"💸 Withdraw Request\nUser: {m.from_user.id}\nAmount: ₹{amt}\nUPI: {upi}",
-        reply_markup=buttons
-    )
-
-    await m.reply("✅ Request sent to admin.")
-
-# ───────── APPROVE ───────── #
-@Bot.on_callback_query(filters.regex("^approve_"))
-async def approve(bot, q):
-    wid = q.data.split("_")[1]
-    data = withdraws.find_one({"_id": wid})
-
-    if not data or data.get("status") != "pending":
-        return
-
-    users.update_one({"_id": data["user"]}, {"$inc": {"wallet": -data["amount"]}})
-    withdraws.update_one({"_id": wid}, {"$set": {"status": "approved"}})
-
-    await bot.send_message(data["user"], "✅ Withdraw Approved")
-    await q.message.edit_text(q.message.text + "\n\n✅ Approved")
-
-# ───────── REJECT ───────── #
-@Bot.on_callback_query(filters.regex("^reject_"))
-async def reject(bot, q):
-    wid = q.data.split("_")[1]
-    withdraws.update_one({"_id": wid}, {"$set": {"status": "rejected"}})
-    await q.message.edit_text(q.message.text + "\n\n❌ Rejected")
-
-# ───────── ADMIN SWITCH ───────── #
-@Bot.on_message(filters.command("onwithdraw") & filters.private)
-async def onwithdraw(bot, m):
-    if m.from_user.id in ADMINS:
-        set_withdraw(True)
-        await m.reply("✅ Withdraw Enabled")
-
-@Bot.on_message(filters.command("offwithdraw") & filters.private)
-async def offwithdraw(bot, m):
-    if m.from_user.id in ADMINS:
-        set_withdraw(False)
-        await m.reply("❌ Withdraw Disabled")
 
 # ───────── HEALTH CHECK ───────── #
 class HealthCheckHandler(BaseHTTPRequestHandler):
