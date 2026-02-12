@@ -21,7 +21,7 @@ db = client["telegram_bot"]
 users = db["users"]
 rewards = db["rewards"]
 withdraws = db["withdraws"]
-giftcodes = db["giftcodes"]   # ✅ Added gift collection
+giftcodes = db["giftcodes"]
 settings = db["settings"]
 
 ADMIN_CHANNEL = int(os.getenv("ADMIN_CHANNEL"))
@@ -29,7 +29,7 @@ ADMINS = [int(x) for x in os.getenv("ADMINS", "").split()]
 
 TVKURL_API = "9986767adc94f9d0a46a66fe436a9ba577c74f1f"
 
-# Settings defaults
+# Default settings
 settings.update_one({"_id": "withdraw"}, {"$setOnInsert": {"enabled": False}}, upsert=True)
 settings.update_one({"_id": "cooldown"}, {"$setOnInsert": {"enabled": True}}, upsert=True)
 
@@ -63,28 +63,36 @@ def shorten_with_tvkurl(long_url):
     except:
         return long_url
 
-def cooldown_enabled():
-    s = settings.find_one({"_id": "cooldown"})
-    return s.get("enabled", True)
+def withdraw_enabled():
+    s = settings.find_one({"_id": "withdraw"})
+    return s.get("enabled", False)
 
-def set_cooldown(value: bool):
-    settings.update_one({"_id": "cooldown"}, {"$set": {"enabled": value}}, upsert=True)
+def set_withdraw(value: bool):
+    settings.update_one({"_id": "withdraw"}, {"$set": {"enabled": value}}, upsert=True)
+
+def can_withdraw(uid, amount):
+    if not withdraw_enabled():
+        return False, "❌ Withdraw system is OFF."
+    if amount < 100:
+        return False, "❌ Minimum withdraw is ₹100."
+    user = users.find_one({"_id": uid})
+    if not user or user.get("wallet", 0) < amount:
+        return False, "❌ Insufficient balance."
+    return True, None
 
 # ───────── GENLINK ───────── #
 @Bot.on_message(filters.command("genlink"))
 async def genlink(bot, m):
 
     ensure_user(m.from_user.id)
-
     user_data = users.find_one({"_id": m.from_user.id})
     now = datetime.utcnow()
 
-    if cooldown_enabled():
-        last_gen = user_data.get("last_gen")
-        if last_gen and now - last_gen < timedelta(hours=1):
-            remaining = timedelta(hours=1) - (now - last_gen)
-            minutes = int(remaining.total_seconds() // 60)
-            return await m.reply(f"⏳ Wait {minutes} minutes before generating next link.")
+    last_gen = user_data.get("last_gen")
+    if last_gen and now - last_gen < timedelta(hours=1):
+        remaining = timedelta(hours=1) - (now - last_gen)
+        minutes = int(remaining.total_seconds() // 60)
+        return await m.reply(f"⏳ Wait {minutes} minutes before generating next link.")
 
     token = gen_token()
 
@@ -95,10 +103,7 @@ async def genlink(bot, m):
         "created_at": now
     })
 
-    users.update_one(
-        {"_id": m.from_user.id},
-        {"$set": {"last_gen": now}}
-    )
+    users.update_one({"_id": m.from_user.id}, {"$set": {"last_gen": now}})
 
     me = await bot.get_me()
     deep_link = f"https://t.me/{me.username}?start=reward_{token}"
@@ -113,7 +118,7 @@ async def genlink(bot, m):
         ])
     )
 
-# ───────── START + COMMAND LIST ───────── #
+# ───────── START ───────── #
 @Bot.on_message(filters.command("start") & filters.private)
 async def start(bot, m):
 
@@ -126,13 +131,10 @@ async def start(bot, m):
 
         if not data:
             return await m.reply("❌ Invalid token.")
-
         if data["used"]:
             return await m.reply("❌ Token already used.")
-
         if data["user"] != m.from_user.id:
             return await m.reply("❌ This link is not yours.")
-
         if datetime.utcnow() - data["created_at"] > timedelta(hours=1):
             return await m.reply("❌ Token expired.")
 
@@ -143,7 +145,6 @@ async def start(bot, m):
 
     await m.reply(
         "👋 Welcome!\n\n"
-        "📌 Commands:\n"
         "/genlink - Generate earning link\n"
         "/wallet - Check balance\n"
         "/withdraw - Cash out earnings\n"
@@ -158,69 +159,79 @@ async def wallet(bot, m):
     bal = user.get("wallet", 0)
     await m.reply(f"💰 Your Balance: ₹{bal}")
 
-# ───────── GIFT SYSTEM ───────── #
+# ───────── WITHDRAW SYSTEM ───────── #
+@Bot.on_message(filters.command("withdraw") & filters.private)
+async def withdraw(bot, m):
+    if not withdraw_enabled():
+        return await m.reply("❌ Withdraw system is OFF.")
 
-# Admin generate gift codes
-@Bot.on_message(filters.command("gengift") & filters.private)
-async def gengift(bot, m):
-
-    if m.from_user.id not in ADMINS:
-        return await m.reply("❌ Admin only.")
-
-    try:
-        amount = float(m.command[1])
-        quantity = int(m.command[2])
-    except:
-        return await m.reply("Usage: /gengift amount quantity")
-
-    codes = []
-
-    for _ in range(quantity):
-        code = gen_token(10)
-        giftcodes.insert_one({
-            "code": code,
-            "amount": amount,
-            "used": False,
-            "used_by": None,
-            "created_at": datetime.utcnow()
-        })
-        codes.append(code)
-
-    await m.reply("🎁 Gift Codes Generated:\n\n" + "\n".join(codes))
-
-
-# User redeem gift
-@Bot.on_message(filters.command("redeemgift") & filters.private)
-async def redeemgift(bot, m):
-
-    try:
-        code = m.command[1].strip().upper()
-    except:
-        return await m.reply("Usage: /redeemgift CODE")
-
-    gift = giftcodes.find_one({"code": code})
-
-    if not gift:
-        return await m.reply("❌ Invalid gift code.")
-
-    if gift["used"]:
-        return await m.reply("❌ Code redeemed by another user.")
-
-    giftcodes.update_one(
-        {"code": code},
-        {"$set": {
-            "used": True,
-            "used_by": m.from_user.id,
-            "used_at": datetime.utcnow()
-        }}
+    await m.reply(
+        "💸 Withdraw Options:\n\n"
+        "/upiid name@upi amount\n"
+        "Example:\n"
+        "/upiid abc@upi 100"
     )
 
-    users.update_one(
-        {"_id": m.from_user.id},
-        {"$inc": {"wallet": gift["amount"]}}
+@Bot.on_message(filters.command("upiid") & filters.private)
+async def upiid(bot, m):
+    try:
+        upi = m.command[1]
+        amt = int(m.command[2])
+    except:
+        return await m.reply("Usage: /upiid name@upi 100")
+
+    ok, reason = can_withdraw(m.from_user.id, amt)
+    if not ok:
+        return await m.reply(reason)
+
+    wid = gen_token()
+
+    withdraws.insert_one({
+        "_id": wid,
+        "user": m.from_user.id,
+        "amount": amt,
+        "upi": upi,
+        "status": "pending",
+        "date": datetime.utcnow()
+    })
+
+    buttons = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{wid}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{wid}")
+        ]
+    ])
+
+    await bot.send_message(
+        ADMIN_CHANNEL,
+        f"💸 Withdraw Request\n\n"
+        f"User: {m.from_user.id}\n"
+        f"Amount: ₹{amt}\n"
+        f"UPI: {upi}",
+        reply_markup=buttons
     )
 
-    await m.reply(f"✅ ₹{gift['amount']} added to your wallet!")
+    await m.reply("✅ Withdraw request sent to admin.")
+
+@Bot.on_callback_query(filters.regex("^approve_"))
+async def approve(bot, q):
+    wid = q.data.split("_")[1]
+    data = withdraws.find_one({"_id": wid})
+
+    if not data or data["status"] != "pending":
+        return await q.answer("Invalid request")
+
+    users.update_one({"_id": data["user"]}, {"$inc": {"wallet": -data["amount"]}})
+    withdraws.update_one({"_id": wid}, {"$set": {"status": "approved"}})
+
+    await bot.send_message(data["user"], "✅ Withdraw Approved")
+    await q.message.edit_text(q.message.text + "\n\n✅ APPROVED")
+
+@Bot.on_callback_query(filters.regex("^reject_"))
+async def reject(bot, q):
+    wid = q.data.split("_")[1]
+    withdraws.update_one({"_id": wid}, {"$set": {"status": "rejected"}})
+    await q.message.edit_text(q.message.text + "\n\n❌ REJECTED")
 
 # ───────── HEALTH CHECK ───────── #
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -234,5 +245,5 @@ def run_server():
 
 if __name__ == "__main__":
     threading.Thread(target=run_server, daemon=True).start()
-    print("🚀 Bot Running (Gift System Added)")
+    print("🚀 Bot Running (Withdraw Fixed)")
     Bot.run()
