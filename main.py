@@ -25,7 +25,7 @@ settings = db["settings"]
 
 ADMIN_CHANNEL = int(os.getenv("ADMIN_CHANNEL"))
 ADMINS = [int(x) for x in os.getenv("ADMINS", "").split()]
-TARGET_GROUP = -1001892345678  # Your group ID: https://t.me/+-K09FAQa85I5MDc1
+TARGET_GROUP = -1003865283730  # Your group ID: https://t.me/+-K09FAQa85I5MDc1
 
 # Ensure settings exist
 settings.update_one({"_id": "withdraw"}, {"$setOnInsert": {"enabled": False}}, upsert=True)
