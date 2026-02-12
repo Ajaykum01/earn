@@ -58,13 +58,12 @@ def shorten_with_tvkurl(long_url):
     try:
         api_url = f"https://tvkurl.site/api?api={TVKURL_API}&url={urllib.parse.quote_plus(long_url)}&format=text"
         result = urllib.request.urlopen(api_url, timeout=10).read().decode().strip()
-
-        # Make sure valid link returned
         if result.startswith("http"):
             return result
         return long_url
     except:
         return long_url
+
 
 # ───────── GENLINK ───────── #
 @Bot.on_message(filters.command("genlink"))
@@ -82,7 +81,6 @@ async def genlink(bot, m):
         minutes = int(remaining.total_seconds() // 60)
         return await m.reply(f"⏳ Wait {minutes} minutes before generating next link.")
 
-    # Create secure token
     token = gen_token()
 
     rewards.insert_one({
@@ -97,11 +95,8 @@ async def genlink(bot, m):
         {"$set": {"last_gen": now}}
     )
 
-    # Telegram deep link
     me = await bot.get_me()
     deep_link = f"https://t.me/{me.username}?start=reward_{token}"
-
-    # TVKURL short link
     tvk_short = shorten_with_tvkurl(deep_link)
 
     await m.reply(
@@ -112,6 +107,7 @@ async def genlink(bot, m):
             [InlineKeyboardButton("🔗 Open Short Link", url=tvk_short)]
         ])
     )
+
 
 # ───────── CLAIM REWARD ───────── #
 @Bot.on_message(filters.command("start") & filters.private)
@@ -136,21 +132,13 @@ async def start(bot, m):
         if datetime.utcnow() - data["created_at"] > timedelta(hours=1):
             return await m.reply("❌ Token expired.")
 
-        # Mark used
-        rewards.update_one(
-            {"token": token},
-            {"$set": {"used": True}}
-        )
-
-        # Add ₹1.5
-        users.update_one(
-            {"_id": m.from_user.id},
-            {"$inc": {"wallet": 1.5}}
-        )
+        rewards.update_one({"token": token}, {"$set": {"used": True}})
+        users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": 1.5}})
 
         return await m.reply("✅ ₹1.5 added to your wallet!")
 
     await m.reply("👋 Welcome! Use /genlink to earn.")
+
 
 # ───────── WALLET ───────── #
 @Bot.on_message(filters.command("wallet") & filters.private)
@@ -159,6 +147,124 @@ async def wallet(bot, m):
     user = users.find_one({"_id": m.from_user.id})
     bal = user.get("wallet", 0)
     await m.reply(f"💰 Your Balance: ₹{bal}")
+
+
+# ───────── WITHDRAW SYSTEM ───────── #
+def withdraw_enabled():
+    s = settings.find_one({"_id": "withdraw"})
+    return s.get("enabled", False)
+
+def set_withdraw(value: bool):
+    settings.update_one({"_id": "withdraw"}, {"$set": {"enabled": value}}, upsert=True)
+
+def can_withdraw(uid, amount):
+    if not withdraw_enabled():
+        return False, "❌ Withdraw system is OFF."
+
+    if amount < 100:
+        return False, "❌ Minimum withdraw is ₹100."
+
+    user = users.find_one({"_id": uid})
+    if not user or user.get("wallet", 0) < amount:
+        return False, "❌ Insufficient balance."
+
+    return True, None
+
+
+@Bot.on_message(filters.command("onwithdraw") & filters.private)
+async def onwithdraw(bot, m):
+    if m.from_user.id not in ADMINS:
+        return await m.reply("❌ Admin only.")
+    set_withdraw(True)
+    await m.reply("✅ Withdraw ENABLED")
+
+
+@Bot.on_message(filters.command("offwithdraw") & filters.private)
+async def offwithdraw(bot, m):
+    if m.from_user.id not in ADMINS:
+        return await m.reply("❌ Admin only.")
+    set_withdraw(False)
+    await m.reply("❌ Withdraw DISABLED")
+
+
+@Bot.on_message(filters.command("withdraw") & filters.private)
+async def withdraw(bot, m):
+    if not withdraw_enabled():
+        return await m.reply("❌ Withdraw system is OFF.")
+
+    await m.reply(
+        "💸 Withdraw Options:\n\n"
+        "Use:\n"
+        "/upiid name@upi amount\n\n"
+        "Example:\n"
+        "/upiid abc@upi 100"
+    )
+
+
+@Bot.on_message(filters.command("upiid") & filters.private)
+async def upiid(bot, m):
+
+    try:
+        upi = m.command[1]
+        amt = int(m.command[2])
+    except:
+        return await m.reply("Usage: /upiid name@upi 100")
+
+    ok, reason = can_withdraw(m.from_user.id, amt)
+    if not ok:
+        return await m.reply(reason)
+
+    wid = gen_token()
+
+    withdraws.insert_one({
+        "_id": wid,
+        "user": m.from_user.id,
+        "amount": amt,
+        "upi": upi,
+        "status": "pending",
+        "date": datetime.utcnow()
+    })
+
+    buttons = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{wid}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{wid}")
+        ]
+    ])
+
+    await bot.send_message(
+        ADMIN_CHANNEL,
+        f"💸 Withdraw Request\n\n"
+        f"User: {m.from_user.id}\n"
+        f"Amount: ₹{amt}\n"
+        f"UPI: {upi}",
+        reply_markup=buttons
+    )
+
+    await m.reply("✅ Withdraw request sent to admin.")
+
+
+@Bot.on_callback_query(filters.regex("^approve_"))
+async def approve(bot, q):
+    wid = q.data.split("_")[1]
+    data = withdraws.find_one({"_id": wid})
+
+    if not data or data["status"] != "pending":
+        return await q.answer("Invalid request")
+
+    users.update_one({"_id": data["user"]}, {"$inc": {"wallet": -data["amount"]}})
+    withdraws.update_one({"_id": wid}, {"$set": {"status": "approved"}})
+
+    await bot.send_message(data["user"], "✅ Withdraw Approved")
+    await q.message.edit_text(q.message.text + "\n\n✅ APPROVED")
+
+
+@Bot.on_callback_query(filters.regex("^reject_"))
+async def reject(bot, q):
+    wid = q.data.split("_")[1]
+    withdraws.update_one({"_id": wid}, {"$set": {"status": "rejected"}})
+    await q.message.edit_text(q.message.text + "\n\n❌ REJECTED")
+
 
 # ───────── HEALTH CHECK ───────── #
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -170,7 +276,8 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 def run_server():
     HTTPServer(("0.0.0.0", 8080), HealthCheckHandler).serve_forever()
 
+
 if __name__ == "__main__":
     threading.Thread(target=run_server, daemon=True).start()
-    print("🚀 Bot Running (TVKURL → Token Mode)")
+    print("🚀 Bot Running (TVKURL → Token Mode + Withdraw)")
     Bot.run()
