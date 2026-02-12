@@ -53,6 +53,17 @@ def is_withdraw_day():
     now = datetime.now(IST)
     return now.day in [1, 2]
 
+def can_withdraw(uid, amount):
+    if not wallet_enabled():
+        return False, "Withdraw is OFF by admin."
+    if not is_withdraw_day():
+        return False, "Withdraw allowed only on 1st & 2nd."
+    if amount < 100:
+        return False, "Minimum withdraw is ₹100."
+    if users.find_one({"_id": uid})["wallet"] < amount:
+        return False, "Insufficient balance."
+    return True, None
+
 def gen_token(n=8):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=n))
 
@@ -143,51 +154,62 @@ async def wallet(bot, m):
         f"Minimum Withdraw: ₹100"
     )
 
-# ───────── GIFT GENERATION (ADMIN) ───────── #
-@Bot.on_message(filters.command("gengift") & filters.private)
-async def gengift(bot, m):
-    if m.from_user.id not in ADMINS:
-        return await m.reply("❌ Admin Only")
+# ───────── WITHDRAW MENU ───────── #
+@Bot.on_message(filters.command("withdraw") & filters.private)
+async def withdraw(bot, m):
+    await m.reply(
+        "💸 Withdraw Options:\n\n"
+        "UPI → /upiid name@upi amount\n"
+        "Redeem → /gmail email amount"
+    )
 
-    amount = int(m.command[1])
-    count = int(m.command[2])
+# ───────── UPI REQUEST ───────── #
+@Bot.on_message(filters.command("upiid") & filters.private)
+async def upiid(bot, m):
+    try:
+        upi, amt = m.command[1], int(m.command[2])
+    except:
+        return await m.reply("Usage: /upiid name@upi 100")
 
-    codes = []
+    ok, reason = can_withdraw(m.from_user.id, amt)
+    if not ok:
+        return await m.reply(reason)
 
-    for _ in range(count):
-        code = gen_token()
-        giftcodes.insert_one({"code": code, "amount": amount, "used": False})
-        codes.append(code)
+    wid = gen_token()
 
-    await m.reply("🎁 Gift Codes Generated:\n\n" + "\n".join(codes))
+    withdraws.insert_one({"_id": wid, "user": m.from_user.id, "amount": amt, "status": "pending"})
 
-# ───────── REDEEM GIFT ───────── #
-@Bot.on_message(filters.command("redeemgift") & filters.private)
-async def redeemgift(bot, m):
-    code = m.command[1]
+    buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{wid}"),
+         InlineKeyboardButton("❌ Reject", callback_data=f"reject_{wid}")]
+    ])
 
-    gift = giftcodes.find_one({"code": code})
+    await bot.send_message(ADMIN_CHANNEL,
+        f"Withdraw Request\nUser: {m.from_user.id}\nAmount: ₹{amt}\nUPI: {upi}",
+        reply_markup=buttons)
 
-    if not gift or gift["used"]:
-        return await m.reply("❌ Invalid or Used Code")
+    await m.reply("✅ Request sent to admin.")
 
-    giftcodes.update_one({"code": code}, {"$set": {"used": True}})
-    users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": gift["amount"]}})
+# ───────── APPROVE / REJECT ───────── #
+@Bot.on_callback_query(filters.regex("^approve_"))
+async def approve(bot, q):
+    wid = q.data.split("_")[1]
+    data = withdraws.find_one({"_id": wid})
 
-    await m.reply(f"🎉 ₹{gift['amount']} added to your wallet!")
+    if not data or data["status"] != "pending":
+        return
 
-# ───────── ADMIN SWITCH ───────── #
-@Bot.on_message(filters.command("onwallet") & filters.private)
-async def onwallet(bot, m):
-    if m.from_user.id in ADMINS:
-        settings.update_one({"_id": "wallet"}, {"$set": {"enabled": True}})
-        await m.reply("✅ Withdraw ENABLED")
+    users.update_one({"_id": data["user"]}, {"$inc": {"wallet": -data["amount"]}})
+    withdraws.update_one({"_id": wid}, {"$set": {"status": "approved"}})
 
-@Bot.on_message(filters.command("offwallet") & filters.private)
-async def offwallet(bot, m):
-    if m.from_user.id in ADMINS:
-        settings.update_one({"_id": "wallet"}, {"$set": {"enabled": False}})
-        await m.reply("❌ Withdraw DISABLED")
+    await bot.send_message(data["user"], "✅ Withdraw Approved")
+    await q.message.edit_text(q.message.text + "\nApproved")
+
+@Bot.on_callback_query(filters.regex("^reject_"))
+async def reject(bot, q):
+    wid = q.data.split("_")[1]
+    withdraws.update_one({"_id": wid}, {"$set": {"status": "rejected"}})
+    await q.message.edit_text(q.message.text + "\nRejected")
 
 # ───────── HEALTH CHECK ───────── #
 class HealthCheckHandler(BaseHTTPRequestHandler):
