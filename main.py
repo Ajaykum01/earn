@@ -21,7 +21,8 @@ API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 MONGO_URL = os.getenv("MONGO_URL", "")
 ADMINS = [int(x) for x in os.getenv("ADMINS", "").split() if x.strip()]
-WITHDRAW_CHANNEL = -1003624079737
+# Ensure this is an integer. Pyrogram requires -100 prefix for channels.
+WITHDRAW_CHANNEL = -1003624079737 
 TVK_API_TOKEN = "9986767adc94f9d0a46a66fe436a9ba577c74f1f"
 
 # ===== Database =====
@@ -180,7 +181,7 @@ async def cmd_withdraw(_, message):
         "/gmail abcd@gmail.com 100"
     )
 
-
+# Fixed create_withdraw_request with Peer ID handling and Refund Logic
 async def create_withdraw_request(message, method: str, account: str, amount_raw: str):
     if not withdraw_enabled():
         return await message.reply("❌ Withdraw is currently disabled.")
@@ -200,43 +201,49 @@ async def create_withdraw_request(message, method: str, account: str, amount_raw
     if balance < amount:
         return await message.reply(f"❌ Insufficient balance. Your balance: ₹{fmt_money(balance)}")
 
-    # Deduct money immediately upon request
+    # Deduct money immediately
     users.update_one({"_id": message.from_user.id}, {"$inc": {"wallet": -amount}})
 
     request_id = new_code(12)
-    withdraw_requests.insert_one(
-        {
-            "request_id": request_id,
-            "user_id": message.from_user.id,
-            "method": method,
-            "account": account,
-            "amount": amount,
-            "status": "pending",
-            "created_at": datetime.utcnow(),
-        }
-    )
+    withdraw_requests.insert_one({
+        "request_id": request_id,
+        "user_id": message.from_user.id,
+        "method": method,
+        "account": account,
+        "amount": amount,
+        "status": "pending",
+        "created_at": datetime.utcnow(),
+    })
 
-    keyboard = InlineKeyboardMarkup(
+    keyboard = InlineKeyboardMarkup([
         [
-            [
-                InlineKeyboardButton("✅ Approve", callback_data=f"wd_approve:{request_id}"),
-                InlineKeyboardButton("❌ Reject", callback_data=f"wd_reject:{request_id}"),
-            ]
+            InlineKeyboardButton("✅ Approve", callback_data=f"wd_approve:{request_id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"wd_reject:{request_id}"),
         ]
+    ])
+
+    text = (
+        "💳 **New Withdraw Request**\n\n"
+        f"👤 **User:** {message.from_user.mention} (`{message.from_user.id}`)\n"
+        f"💰 **Amount:** ₹{fmt_money(amount)}\n"
+        f"🛠 **Method:** {method}\n"
+        f"🏦 **Account:** `{account}`"
     )
 
-    await bot.send_message(
-        WITHDRAW_CHANNEL,
-        "💳 New Withdraw Request\n"
-        f"Request ID: {request_id}\n"
-        f"User ID: {message.from_user.id}\n"
-        f"Method: {method}\n"
-        f"Account: {account}\n"
-        f"Amount: ₹{fmt_money(amount)}",
-        reply_markup=keyboard,
-    )
-
-    await message.reply(f"✅ ₹{fmt_money(amount)} deducted and request sent for review.")
+    try:
+        # We ensure WITHDRAW_CHANNEL is used as an integer
+        await bot.send_message(
+            chat_id=int(WITHDRAW_CHANNEL), 
+            text=text, 
+            reply_markup=keyboard
+        )
+        await message.reply(f"✅ ₹{fmt_money(amount)} deducted. Request sent to admin.")
+    except Exception as e:
+        # Refund if the send message fails
+        users.update_one({"_id": message.from_user.id}, {"$inc": {"wallet": amount}})
+        withdraw_requests.delete_one({"request_id": request_id})
+        print(f"CRITICAL ERROR SENDING TO CHANNEL: {e}") 
+        await message.reply("❌ Error sending request to admin channel. Money refunded to wallet.")
 
 
 @bot.on_message(filters.command("upiid") & filters.private)
