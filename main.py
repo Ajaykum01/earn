@@ -125,35 +125,13 @@ async def genlink(bot, m):
     tvk_short = shorten_with_tvkurl(deep_link)
 
     await m.reply(
-        "💰 Your ₹1.5 Reward Link\\n"
-        "⏳ Valid 60 Minutes\\n\\n"
+        "💰 Your ₹1.5 Reward Link\n"
+        "⏳ Valid 60 Minutes\n\n"
         "Complete the shortlink to earn.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔗 Open Short Link", url=tvk_short)]
         ])
     )
-
-# ───────── ONTIME/OFFTIME COMMANDS ───────── #
-@Bot.on_message(filters.command("ontime") & filters.private)
-async def ontime(bot, m):
-    if m.from_user.id not in ADMINS:
-        return await m.reply("❌ Admin only.")
-    
-    try:
-        hours = int(m.command[1]) if len(m.command) > 1 else 1
-        set_genlink_time(True, hours)
-        await m.reply(f"✅ Genlink cooldown **ON** - {hours} hour(s)")
-    except:
-        set_genlink_time(True, 1)
-        await m.reply("✅ Genlink cooldown **ON** - 1 hour")
-
-@Bot.on_message(filters.command("offtime") & filters.private)
-async def offtime(bot, m):
-    if m.from_user.id not in ADMINS:
-        return await m.reply("❌ Admin only.")
-    
-    set_genlink_time(False, 0)
-    await m.reply("✅ Genlink cooldown **OFF** - No wait time")
 
 # ───────── START ───────── #
 @Bot.on_message(filters.command("start") & filters.private)
@@ -181,169 +159,10 @@ async def start(bot, m):
         return await m.reply("✅ ₹1.5 added to your wallet!")
 
     await m.reply(
-        "👋 Welcome!\\n\\n"
-        "/genlink - Generate earning link\\n"
-        "/wallet - Check balance\\n"
-        "/withdraw - Cash out earnings\\n"
-        "/redeemgift CODE - Redeem gift code\\n\\n"
+        "👋 Welcome!\n\n"
+        "/genlink - Generate earning link\n"
+        "/wallet - Check balance\n"
+        "/withdraw - Cash out earnings\n"
+        "/redeemgift CODE - Redeem gift code\n\n"
         f"Genlink cooldown: {'ON' if genlink_time_enabled() else 'OFF'} ({get_genlink_cooldown_hours()}h)"
     )
-
-# ───────── WALLET ───────── #
-@Bot.on_message(filters.command("wallet") & filters.private)
-async def wallet(bot, m):
-    ensure_user(m.from_user.id)
-    user = users.find_one({"_id": m.from_user.id})
-    bal = user.get("wallet", 0)
-    await m.reply(f"💰 Your Balance: ₹{bal}")
-
-# ───────── GIFT SYSTEM ───────── #
-
-@Bot.on_message(filters.command("gengift") & filters.private)
-async def gengift(bot, m):
-
-    if m.from_user.id not in ADMINS:
-        return await m.reply("❌ Admin only.")
-
-    try:
-        amount = float(m.command[1])
-        quantity = int(m.command[2])
-    except:
-        return await m.reply("Usage: /gengift amount quantity")
-
-    codes = []
-
-    for _ in range(quantity):
-        code = gen_token(10)
-        giftcodes.insert_one({
-            "code": code,
-            "amount": amount,
-            "used": False,
-            "used_by": None,
-            "created_at": datetime.utcnow()
-        })
-        codes.append(code)
-
-    await m.reply("🎁 Gift Codes Generated:\\n\\n" + "\\n".join(codes))
-
-
-@Bot.on_message(filters.command("redeemgift") & filters.private)
-async def redeemgift(bot, m):
-
-    try:
-        code = m.command[1].strip().upper()
-    except:
-        return await m.reply("Usage: /redeemgift CODE")
-
-    gift = giftcodes.find_one({"code": code})
-
-    if not gift:
-        return await m.reply("❌ Invalid gift code.")
-
-    if gift["used"]:
-        return await m.reply("❌ Code redeemed by another user.")
-
-    giftcodes.update_one(
-        {"code": code},
-        {"$set": {
-            "used": True,
-            "used_by": m.from_user.id,
-            "used_at": datetime.utcnow()
-        }}
-    )
-
-    users.update_one(
-        {"_id": m.from_user.id},
-        {"$inc": {"wallet": gift["amount"]}}
-    )
-
-    await m.reply(f"✅ ₹{gift['amount']} added to your wallet!")
-
-# ───────── WITHDRAW SYSTEM ───────── #
-@Bot.on_message(filters.command("withdraw") & filters.private)
-async def withdraw(bot, m):
-    if not withdraw_enabled():
-        return await m.reply("❌ Withdraw system is OFF.")
-
-    await m.reply(
-        "💸 Withdraw Options:\\n\\n"
-        "/upiid name@upi amount\\n"
-        "Example:\\n"
-        "/upiid abc@upi 100"
-    )
-
-@Bot.on_message(filters.command("upiid") & filters.private)
-async def upiid(bot, m):
-    try:
-        upi = m.command[1]
-        amt = int(m.command[2])
-    except:
-        return await m.reply("Usage: /upiid name@upi 100")
-
-    ok, reason = can_withdraw(m.from_user.id, amt)
-    if not ok:
-        return await m.reply(reason)
-
-    wid = gen_token()
-
-    withdraws.insert_one({
-        "_id": wid,
-        "user": m.from_user.id,
-        "amount": amt,
-        "upi": upi,
-        "status": "pending",
-        "date": datetime.utcnow()
-    })
-
-    buttons = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{wid}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{wid}")
-        ]
-    ])
-
-    await bot.send_message(
-        ADMIN_CHANNEL,
-        f"💸 Withdraw Request\\n\\n"
-        f"User: {m.from_user.id}\\n"
-        f"Amount: ₹{amt}\\n"
-        f"UPI: {upi}",
-        reply_markup=buttons
-    )
-
-    await m.reply("✅ Withdraw request sent to admin.")
-
-@Bot.on_callback_query(filters.regex("^approve_"))
-async def approve(bot, q):
-    wid = q.data.split("_")[1]
-    data = withdraws.find_one({"_id": wid})
-
-    if not data or data["status"] != "pending":
-        return await q.answer("Invalid request")
-
-    users.update_one({"_id": data["user"]}, {"$inc": {"wallet": -data["amount"]}})
-    withdraws.update_one({"_id": wid}, {"$set": {"status": "approved"}})
-
-    await bot.send_message(data["user"], "✅ Withdraw Approved")
-    await q.message.edit_text(q.message.text + "\\n\\n✅ APPROVED")
-
-@Bot.on_callback_query(filters.regex("^reject_"))
-async def reject(bot, q):
-    wid = q.data.split("_")[1]
-    withdraws.update_one({"_id": wid}, {"$set": {"status": "rejected"}})
-    await q.message.edit_text(q.message.text + "\\n\\n❌ REJECTED")
-
-# ───────── HEALTH CHECK ───────── #
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Alive")
-
-def run_server():
-    HTTPServer(("0.0.0.0", 8080), HealthCheckHandler).serve_forever()
-
-if __name__ == "__main__":
-    threading.Thread(target=run_server, daemon=True).start()
-    print("🚀 Bot Running (Gift + Withdraw + Genlink Time Control Fixed)")
-    Bot.run()
