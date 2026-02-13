@@ -218,73 +218,87 @@ async def redeemgift(bot, m):
     users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": gift["amount"]}})
     await m.reply(f"✅ ₹{gift['amount']} added to your wallet!")
 
-# ───────── WITHDRAW SYSTEM ───────── #
-@Bot.on_message(filters.command("withdraw") & filters.private)
-async def withdraw(bot, m):
-    if not withdraw_enabled():
-        return await m.reply("❌ Withdraw system is currently OFF.")
-    await m.reply(
-        "💸 **Withdrawal**\n\n"
-        "Use command: `/upiid [your_upi] [amount]`\n"
-        "Example: `/upiid abc@upi 100`"
-    )
+# ───────── WITHDRAW COMMANDS ───────── #
 
-@Bot.on_message(filters.command("upiid") & filters.private)
-async def upiid(bot, m):
-    try:
-        upi = m.command[1]
-        amt = float(m.command[2])
-    except:
-        return await m.reply("Usage: /upiid name@upi 100")
-
-    ok, reason = can_withdraw(m.from_user.id, amt)
-    if not ok: return await m.reply(reason)
-
-    # Deduct balance immediately to prevent double spending
-    users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": -amt}})
+@Bot.on_message(filters.command(["upiid", "gmail"]) & filters.private)
+async def process_withdraw(bot, m):
+    ensure_user(m.from_user.id)
     
-    wid = gen_token()
+    # Check if user provided the ID/Email
+    if len(m.command) < 2:
+        return await m.reply(f"Please provide your details. Usage: `/{m.command[0]} your_details`")
+    
+    address = m.text.split(None, 1)[1]
+    user_id = m.from_user.id
+    user = users.find_one({"_id": user_id})
+    balance = user.get("wallet", 0)
+
+    # Validation (Min 100 as per your logic)
+    if balance < 100:
+        return await m.reply("❌ Minimum ₹100 is required to withdraw.")
+
+    # Create Request in DB
+    withdraw_id = gen_token(8)
     withdraws.insert_one({
-        "_id": wid, "user": m.from_user.id, "amount": amt,
-        "upi": upi, "status": "pending", "date": datetime.utcnow()
+        "_id": withdraw_id,
+        "user_id": user_id,
+        "amount": balance,
+        "address": address,
+        "type": m.command[0],
+        "status": "pending"
     })
 
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{wid}"),
-         InlineKeyboardButton("❌ Reject", callback_data=f"reject_{wid}")]
+    # Deduct balance immediately to prevent double-spend
+    users.update_one({"_id": user_id}, {"$set": {"wallet": 0}})
+
+    # Send to Admin Channel
+    admin_msg = (
+        f"💰 **New Withdrawal Request**\n\n"
+        f"👤 **User:** `{user_id}`\n"
+        f"💵 **Amount:** ₹{balance}\n"
+        f"🏷 **Method:** {m.command[0].upper()}\n"
+        f"📍 **Address:** `{address}`\n"
+        f"🆔 **ID:** `{withdraw_id}`"
+    )
+    
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Approve", callback_data=f"wd_approve_{withdraw_id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"wd_reject_{withdraw_id}")
+        ]
     ])
 
-    await bot.send_message(
-        ADMIN_CHANNEL,
-        f"💸 **Withdraw Request**\n\nUser ID: `{m.from_user.id}`\nAmount: ₹{amt}\nUPI: `{upi}`",
-        reply_markup=buttons
-    )
-    await m.reply("✅ Request sent! ₹{amt} has been held for processing.")
+    await bot.send_message("-1003624079737", admin_msg, reply_markup=kb)
+    await m.reply("✅ Withdrawal request sent to admin for approval.")
 
-@Bot.on_callback_query(filters.regex("^approve_"))
-async def approve(bot, q):
-    wid = q.data.split("_")[1]
-    data = withdraws.find_one({"_id": wid})
-    if not data or data["status"] != "pending":
-        return await q.answer("Already processed!", show_alert=True)
+# ───────── ADMIN CALLBACK ───────── #
 
-    withdraws.update_one({"_id": wid}, {"$set": {"status": "approved"}})
-    await bot.send_message(data["user"], "✅ **Withdraw Approved!** Your payment is on the way.")
-    await q.message.edit_text(q.message.text + "\n\n✅ APPROVED")
+@Bot.on_callback_query(filters.regex(r"^wd_(approve|reject)_"))
+async def handle_withdraw_callback(bot, cb):
+    data = cb.data.split("_")
+    action = data[1]
+    wd_id = data[2]
 
-@Bot.on_callback_query(filters.regex("^reject_"))
-async def reject(bot, q):
-    wid = q.data.split("_")[1]
-    data = withdraws.find_one({"_id": wid})
-    if not data or data["status"] != "pending":
-        return await q.answer("Already processed!", show_alert=True)
+    wd_request = withdraws.find_one({"_id": wd_id})
+    if not wd_request or wd_request["status"] != "pending":
+        return await cb.answer("Request already processed or not found.", show_alert=True)
 
-    # Refund the user
-    users.update_one({"_id": data["user"]}, {"$inc": {"wallet": data["amount"]}})
-    withdraws.update_one({"_id": wid}, {"$set": {"status": "rejected"}})
-    
-    await bot.send_message(data["user"], "❌ **Withdraw Rejected.** Your balance has been refunded.")
-    await q.message.edit_text(q.message.text + "\n\n❌ REJECTED")
+    user_id = wd_request["user_id"]
+    amount = wd_request["amount"]
+
+    if action == "approve":
+        withdraws.update_one({"_id": wd_id}, {"$set": {"status": "approved"}})
+        await bot.send_message(user_id, f"✅ Your withdrawal of ₹{amount} has been approved and sent!")
+        new_text = cb.message.text + "\n\n✅ **STATUS: APPROVED**"
+    else:
+        # Refund user if rejected
+        users.update_one({"_id": user_id}, {"$inc": {"wallet": amount}})
+        withdraws.update_one({"_id": wd_id}, {"$set": {"status": "rejected"}})
+        await bot.send_message(user_id, f"❌ Your withdrawal of ₹{amount} was rejected. Funds refunded to wallet.")
+        new_text = cb.message.text + "\n\n❌ **STATUS: REJECTED**"
+
+    await cb.message.edit_text(new_text, reply_markup=None)
+    await cb.answer(f"Withdrawal {action}ed!")
 
 # ───────── HEALTH CHECK ───────── #
 class HealthCheckHandler(BaseHTTPRequestHandler):
