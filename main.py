@@ -24,12 +24,12 @@ withdraws = db["withdraws"]
 giftcodes = db["giftcodes"]
 settings = db["settings"]
 
-ADMIN_CHANNEL = int(os.getenv("ADMIN_CHANNEL"))
+ADMIN_CHANNEL = -1003624079737 # Hardcoded as per your request
 ADMINS = [int(x) for x in os.getenv("ADMINS", "").split()]
 
 TVKURL_API = "9986767adc94f9d0a46a66fe436a9ba577c74f1f"
 
-settings.update_one({"_id": "withdraw"}, {"$setOnInsert": {"enabled": False}}, upsert=True)
+settings.update_one({"_id": "withdraw"}, {"$setOnInsert": {"enabled": True}}, upsert=True)
 settings.update_one({"_id": "genlink_time"}, {"$setOnInsert": {"enabled": True, "hours": 1}}, upsert=True)
 
 # ───────── BOT ───────── #
@@ -64,10 +64,7 @@ def shorten_with_tvkurl(long_url):
 
 def withdraw_enabled():
     s = settings.find_one({"_id": "withdraw"})
-    return s.get("enabled", False)
-
-def set_withdraw(value: bool):
-    settings.update_one({"_id": "withdraw"}, {"$set": {"enabled": value}}, upsert=True)
+    return s.get("enabled", True)
 
 def genlink_time_enabled():
     s = settings.find_one({"_id": "genlink_time"})
@@ -80,26 +77,16 @@ def get_genlink_cooldown_hours():
 def set_genlink_time(enabled: bool, hours: int = 1):
     settings.update_one({"_id": "genlink_time"}, {"$set": {"enabled": enabled, "hours": hours}}, upsert=True)
 
-def can_withdraw(uid, amount):
-    if not withdraw_enabled():
-        return False, "❌ Withdraw system is OFF."
-    if amount < 100:
-        return False, "❌ Minimum withdraw is ₹100."
-    user = users.find_one({"_id": uid})
-    if not user or user.get("wallet", 0) < amount:
-        return False, "❌ Insufficient balance."
-    return True, None
-
 # ───────── GENLINK ───────── #
-@Bot.on_message(filters.command("genlink"))
+@Bot.on_message(filters.command("genlink") & filters.private)
 async def genlink(bot, m):
     ensure_user(m.from_user.id)
     user_data = users.find_one({"_id": m.from_user.id})
     now = datetime.utcnow()
 
     cooldown_hours = get_genlink_cooldown_hours() if genlink_time_enabled() else 0
-
     last_gen = user_data.get("last_gen")
+    
     if cooldown_hours > 0 and last_gen and now - last_gen < timedelta(hours=cooldown_hours):
         remaining = timedelta(hours=cooldown_hours) - (now - last_gen)
         minutes = int(remaining.total_seconds() // 60)
@@ -114,7 +101,6 @@ async def genlink(bot, m):
     })
 
     users.update_one({"_id": m.from_user.id}, {"$set": {"last_gen": now}})
-
     me = await bot.get_me()
     deep_link = f"https://t.me/{me.username}?start=reward_{token}"
     tvk_short = shorten_with_tvkurl(deep_link)
@@ -127,23 +113,6 @@ async def genlink(bot, m):
             [InlineKeyboardButton("🔗 Open Short Link", url=tvk_short)]
         ])
     )
-
-# ───────── ONTIME/OFFTIME COMMANDS ───────── #
-@Bot.on_message(filters.command("ontime") & filters.private)
-async def ontime(bot, m):
-    if m.from_user.id not in ADMINS: return
-    try:
-        hours = int(m.command[1]) if len(m.command) > 1 else 1
-        set_genlink_time(True, hours)
-        await m.reply(f"✅ Genlink cooldown **ON** - {hours} hour(s)")
-    except:
-        await m.reply("❌ Use: /ontime 1")
-
-@Bot.on_message(filters.command("offtime") & filters.private)
-async def offtime(bot, m):
-    if m.from_user.id not in ADMINS: return
-    set_genlink_time(False, 0)
-    await m.reply("✅ Genlink cooldown **OFF**")
 
 # ───────── START ───────── #
 @Bot.on_message(filters.command("start") & filters.private)
@@ -172,7 +141,7 @@ async def start(bot, m):
         "• /genlink - Generate earning link\n"
         "• /wallet - Check balance\n"
         "• /withdraw - Cash out earnings\n"
-        "• /redeemgift CODE - Redeem gift code\n\n"
+        "• /redeemgift - Redeem gift code\n\n"
         f"**Genlink cooldown:** {cd_status} ({hrs}h)"
     )
 
@@ -184,60 +153,47 @@ async def wallet(bot, m):
     bal = user.get("wallet", 0)
     await m.reply(f"💰 **Your Balance:** ₹{bal}")
 
-# ───────── GIFT SYSTEM ───────── #
-@Bot.on_message(filters.command("gengift") & filters.private)
-async def gengift(bot, m):
-    if m.from_user.id not in ADMINS: return
-    try:
-        amount = float(m.command[1])
-        quantity = int(m.command[2])
-        codes = []
-        for _ in range(quantity):
-            code = gen_token(10)
-            giftcodes.insert_one({
-                "code": code, "amount": amount, "used": False, 
-                "used_by": None, "created_at": datetime.utcnow()
-            })
-            codes.append(f"`{code}`")
-        await m.reply("🎁 **Gift Codes Generated:**\n\n" + "\n".join(codes))
-    except:
-        await m.reply("Usage: /gengift amount quantity")
+# ───────── WITHDRAW SYSTEM ───────── #
 
-@Bot.on_message(filters.command("redeemgift") & filters.private)
-async def redeemgift(bot, m):
-    try:
-        code = m.command[1].strip().upper()
-    except:
-        return await m.reply("Usage: /redeemgift CODE")
+@Bot.on_message(filters.command("withdraw") & filters.private)
+async def withdraw_cmd(bot, m):
+    if not withdraw_enabled():
+        return await m.reply("❌ Withdrawal system is currently disabled.")
+    
+    ensure_user(m.from_user.id)
+    user = users.find_one({"_id": m.from_user.id})
+    bal = user.get("wallet", 0)
 
-    gift = giftcodes.find_one({"code": code})
-    if not gift: return await m.reply("❌ Invalid gift code.")
-    if gift["used"]: return await m.reply("❌ Code already redeemed.")
+    if bal < 100:
+        return await m.reply(f"❌ Minimum withdrawal is **₹100**.\n💰 Your balance: ₹{bal}")
 
-    giftcodes.update_one({"code": code}, {"$set": {"used": True, "used_by": m.from_user.id, "used_at": datetime.utcnow()}})
-    users.update_one({"_id": m.from_user.id}, {"$inc": {"wallet": gift["amount"]}})
-    await m.reply(f"✅ ₹{gift['amount']} added to your wallet!")
-
-# ───────── WITHDRAW COMMANDS ───────── #
+    await m.reply(
+        "🏦 **Choose Withdrawal Method:**\n\n"
+        "Use `/upiid your@upi` to withdraw via UPI\n"
+        "Use `/gmail your@email.com` to withdraw via Gift Card",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Withdraw UPI", switch_inline_query_current_chat="/upiid ")],
+            [InlineKeyboardButton("Withdraw Gmail", switch_inline_query_current_chat="/gmail ")]
+        ])
+    )
 
 @Bot.on_message(filters.command(["upiid", "gmail"]) & filters.private)
 async def process_withdraw(bot, m):
+    if not withdraw_enabled():
+        return await m.reply("❌ Withdrawal system is OFF.")
+        
     ensure_user(m.from_user.id)
-    
-    # Check if user provided the ID/Email
     if len(m.command) < 2:
-        return await m.reply(f"Please provide your details. Usage: `/{m.command[0]} your_details`")
+        return await m.reply(f"Please provide details. Usage: `/{m.command[0]} address`")
     
     address = m.text.split(None, 1)[1]
     user_id = m.from_user.id
     user = users.find_one({"_id": user_id})
     balance = user.get("wallet", 0)
 
-    # Validation (Min 100 as per your logic)
     if balance < 100:
-        return await m.reply("❌ Minimum ₹100 is required to withdraw.")
+        return await m.reply(f"❌ Minimum ₹100 required. Balance: ₹{balance}")
 
-    # Create Request in DB
     withdraw_id = gen_token(8)
     withdraws.insert_one({
         "_id": withdraw_id,
@@ -248,10 +204,9 @@ async def process_withdraw(bot, m):
         "status": "pending"
     })
 
-    # Deduct balance immediately to prevent double-spend
+    # Reset balance
     users.update_one({"_id": user_id}, {"$set": {"wallet": 0}})
 
-    # Send to Admin Channel
     admin_msg = (
         f"💰 **New Withdrawal Request**\n\n"
         f"👤 **User:** `{user_id}`\n"
@@ -268,8 +223,8 @@ async def process_withdraw(bot, m):
         ]
     ])
 
-    await bot.send_message("-1003624079737", admin_msg, reply_markup=kb)
-    await m.reply("✅ Withdrawal request sent to admin for approval.")
+    await bot.send_message(ADMIN_CHANNEL, admin_msg, reply_markup=kb)
+    await m.reply("✅ Withdrawal request sent to admin! Balance has been locked for processing.")
 
 # ───────── ADMIN CALLBACK ───────── #
 
@@ -281,26 +236,29 @@ async def handle_withdraw_callback(bot, cb):
 
     wd_request = withdraws.find_one({"_id": wd_id})
     if not wd_request or wd_request["status"] != "pending":
-        return await cb.answer("Request already processed or not found.", show_alert=True)
+        return await cb.answer("Request already processed!", show_alert=True)
 
     user_id = wd_request["user_id"]
     amount = wd_request["amount"]
 
     if action == "approve":
         withdraws.update_one({"_id": wd_id}, {"$set": {"status": "approved"}})
-        await bot.send_message(user_id, f"✅ Your withdrawal of ₹{amount} has been approved and sent!")
-        new_text = cb.message.text + "\n\n✅ **STATUS: APPROVED**"
+        try:
+            await bot.send_message(user_id, f"✅ **Withdrawal Approved!**\n₹{amount} has been sent to your account.")
+        except: pass
+        status_text = "✅ APPROVED"
     else:
-        # Refund user if rejected
         users.update_one({"_id": user_id}, {"$inc": {"wallet": amount}})
         withdraws.update_one({"_id": wd_id}, {"$set": {"status": "rejected"}})
-        await bot.send_message(user_id, f"❌ Your withdrawal of ₹{amount} was rejected. Funds refunded to wallet.")
-        new_text = cb.message.text + "\n\n❌ **STATUS: REJECTED**"
+        try:
+            await bot.send_message(user_id, f"❌ **Withdrawal Rejected.**\n₹{amount} has been refunded to your wallet.")
+        except: pass
+        status_text = "❌ REJECTED & REFUNDED"
 
-    await cb.message.edit_text(new_text, reply_markup=None)
-    await cb.answer(f"Withdrawal {action}ed!")
+    await cb.message.edit_text(f"{cb.message.text}\n\n**Status:** {status_text}")
+    await cb.answer(f"Success: {action}")
 
-# ───────── HEALTH CHECK ───────── #
+# ───────── HEALTH CHECK & RUN ───────── #
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
