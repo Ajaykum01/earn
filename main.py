@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from pymongo import MongoClient
+from pyrogram.errors import FloodWait
 
 load_dotenv()
 
@@ -84,6 +85,35 @@ def fmt_money(amount: float) -> str:
 
 
 bot = Client("earn-bot", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
+
+# ===== Auto Delete Handler =====
+@bot.on_message(filters.group & ~filters.service)
+async def auto_delete_handler(client, message):
+    # Skip if message has no text (like photos without captions) or no from_user
+    if not message.from_user:
+        return
+
+    # 1. Don't delete if sender is an Admin
+    if is_admin(message.from_user.id):
+        return
+
+    # 2. Don't delete if it's the bot itself (though filters handle most cases)
+    me = await client.get_me()
+    if message.from_user.id == me.id:
+        return
+
+    # 3. Don't delete /genlink command
+    if message.text and message.text.lower().startswith("/genlink"):
+        return
+
+    # Delete everything else
+    try:
+        await message.delete()
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        await message.delete()
+    except Exception:
+        pass
 
 
 @bot.on_message(filters.command("start") & filters.private)
@@ -181,7 +211,6 @@ async def cmd_withdraw(_, message):
         "/gmail abcd@gmail.com 100"
     )
 
-# Fixed create_withdraw_request with Peer ID handling and Refund Logic
 async def create_withdraw_request(message, method: str, account: str, amount_raw: str):
     if not withdraw_enabled():
         return await message.reply("❌ Withdraw is currently disabled.")
@@ -231,7 +260,6 @@ async def create_withdraw_request(message, method: str, account: str, amount_raw
     )
 
     try:
-        # We ensure WITHDRAW_CHANNEL is used as an integer
         await bot.send_message(
             chat_id=int(WITHDRAW_CHANNEL), 
             text=text, 
@@ -239,7 +267,6 @@ async def create_withdraw_request(message, method: str, account: str, amount_raw
         )
         await message.reply(f"✅ ₹{fmt_money(amount)} deducted. Request sent to admin.")
     except Exception as e:
-        # Refund if the send message fails
         users.update_one({"_id": message.from_user.id}, {"$inc": {"wallet": amount}})
         withdraw_requests.delete_one({"request_id": request_id})
         print(f"CRITICAL ERROR SENDING TO CHANNEL: {e}") 
@@ -283,7 +310,6 @@ async def withdraw_action(_, query):
         await query.message.edit_text(query.message.text + f"\n\n✅ Approved by {query.from_user.mention}.")
         return await query.answer("Approved Successfully")
 
-    # If Rejected: Add money back to user wallet
     users.update_one({"_id": req["user_id"]}, {"$inc": {"wallet": float(req["amount"])}})
     withdraw_requests.update_one(
         {"_id": req["_id"]},
