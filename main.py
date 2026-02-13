@@ -98,10 +98,7 @@ async def genlink(bot, m):
     user_data = users.find_one({"_id": m.from_user.id})
     now = datetime.utcnow()
 
-    if not genlink_time_enabled():
-        cooldown_hours = 0
-    else:
-        cooldown_hours = get_genlink_cooldown_hours()
+    cooldown_hours = get_genlink_cooldown_hours() if genlink_time_enabled() else 0
 
     last_gen = user_data.get("last_gen")
     if last_gen and now - last_gen < timedelta(hours=cooldown_hours):
@@ -125,9 +122,10 @@ async def genlink(bot, m):
     tvk_short = shorten_with_tvkurl(deep_link)
 
     await m.reply(
-        "💰 Your ₹1.5 Reward Link\n"
-        "⏳ Valid 60 Minutes\n\n"
-        "Complete the shortlink to earn.",
+        """💰 Your ₹1.5 Reward Link
+⏳ Valid 60 Minutes
+
+Complete the shortlink to earn.""",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔗 Open Short Link", url=tvk_short)]
         ])
@@ -159,10 +157,36 @@ async def start(bot, m):
         return await m.reply("✅ ₹1.5 added to your wallet!")
 
     await m.reply(
-        "👋 Welcome!\n\n"
-        "/genlink - Generate earning link\n"
-        "/wallet - Check balance\n"
-        "/withdraw - Cash out earnings\n"
-        "/redeemgift CODE - Redeem gift code\n\n"
-        f"Genlink cooldown: {'ON' if genlink_time_enabled() else 'OFF'} ({get_genlink_cooldown_hours()}h)"
+        f"""👋 Welcome!
+
+/genlink - Generate earning link
+/wallet - Check balance
+/withdraw - Cash out earnings
+/redeemgift CODE - Redeem gift code
+
+Genlink cooldown: {'ON' if genlink_time_enabled() else 'OFF'} ({get_genlink_cooldown_hours()}h)
+"""
     )
+
+# ───────── WALLET ───────── #
+@Bot.on_message(filters.command("wallet") & filters.private)
+async def wallet(bot, m):
+    ensure_user(m.from_user.id)
+    user = users.find_one({"_id": m.from_user.id})
+    bal = user.get("wallet", 0)
+    await m.reply(f"💰 Your Balance: ₹{bal}")
+
+# ───────── HEALTH CHECK ───────── #
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Alive")
+
+def run_server():
+    HTTPServer(("0.0.0.0", 8080), HealthCheckHandler).serve_forever()
+
+if __name__ == "__main__":
+    threading.Thread(target=run_server, daemon=True).start()
+    print("🚀 Bot Running")
+    Bot.run()
