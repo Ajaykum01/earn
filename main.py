@@ -21,7 +21,7 @@ API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 MONGO_URL = os.getenv("MONGO_URL", "")
 ADMINS = [int(x) for x in os.getenv("ADMINS", "").split() if x.strip()]
-WITHDRAW_CHANNEL = int(os.getenv("WITHDRAW_CHANNEL", "-1003624079737"))
+WITHDRAW_CHANNEL = -1003624079737
 TVK_API_TOKEN = "9986767adc94f9d0a46a66fe436a9ba577c74f1f"
 
 # ===== Database =====
@@ -33,6 +33,7 @@ gift_codes = db["gift_codes"]
 withdraw_requests = db["withdraw_requests"]
 settings = db["settings"]
 
+# Initialize Settings
 if not settings.find_one({"_id": "withdraw"}):
     settings.insert_one({"_id": "withdraw", "enabled": True})
 if not settings.find_one({"_id": "time_gap"}):
@@ -199,6 +200,9 @@ async def create_withdraw_request(message, method: str, account: str, amount_raw
     if balance < amount:
         return await message.reply(f"❌ Insufficient balance. Your balance: ₹{fmt_money(balance)}")
 
+    # Deduct money immediately upon request
+    users.update_one({"_id": message.from_user.id}, {"$inc": {"wallet": -amount}})
+
     request_id = new_code(12)
     withdraw_requests.insert_one(
         {
@@ -232,7 +236,7 @@ async def create_withdraw_request(message, method: str, account: str, amount_raw
         reply_markup=keyboard,
     )
 
-    await message.reply("✅ Withdraw request sent for admin review.")
+    await message.reply(f"✅ ₹{fmt_money(amount)} deducted and request sent for review.")
 
 
 @bot.on_message(filters.command("upiid") & filters.private)
@@ -264,34 +268,23 @@ async def withdraw_action(_, query):
         return await query.answer("Already processed.", show_alert=True)
 
     if action == "wd_approve":
-        user = users.find_one({"_id": req["user_id"]})
-        balance = float(user.get("wallet", 0))
-
-        if balance < float(req["amount"]):
-            withdraw_requests.update_one(
-                {"_id": req["_id"]},
-                {"$set": {"status": "rejected", "reason": "insufficient_balance_on_approval", "updated_at": datetime.utcnow()}},
-            )
-            await bot.send_message(req["user_id"], "❌ Withdraw rejected: insufficient balance.")
-            await query.message.edit_text(query.message.text + "\n\n⚠️ Auto-rejected (insufficient balance).")
-            return await query.answer("Auto-rejected.")
-
-        users.update_one({"_id": req["user_id"]}, {"$inc": {"wallet": -float(req["amount"])}})
         withdraw_requests.update_one(
             {"_id": req["_id"]},
             {"$set": {"status": "approved", "updated_at": datetime.utcnow()}},
         )
-        await bot.send_message(req["user_id"], f"✅ Your withdraw request was approved. ₹{fmt_money(req['amount'])} deducted.")
+        await bot.send_message(req["user_id"], f"✅ Your withdraw request for ₹{fmt_money(req['amount'])} has been APPROVED.")
         await query.message.edit_text(query.message.text + f"\n\n✅ Approved by {query.from_user.mention}.")
-        return await query.answer("Approved")
+        return await query.answer("Approved Successfully")
 
+    # If Rejected: Add money back to user wallet
+    users.update_one({"_id": req["user_id"]}, {"$inc": {"wallet": float(req["amount"])}})
     withdraw_requests.update_one(
         {"_id": req["_id"]},
         {"$set": {"status": "rejected", "updated_at": datetime.utcnow()}},
     )
-    await bot.send_message(req["user_id"], "❌ Your withdraw request was rejected.")
-    await query.message.edit_text(query.message.text + f"\n\n❌ Rejected by {query.from_user.mention}.")
-    await query.answer("Rejected")
+    await bot.send_message(req["user_id"], f"❌ Your withdraw request for ₹{fmt_money(req['amount'])} was REJECTED. Money refunded to wallet.")
+    await query.message.edit_text(query.message.text + f"\n\n❌ Rejected & Refunded by {query.from_user.mention}.")
+    await query.answer("Rejected and Refunded")
 
 
 @bot.on_message(filters.command("gengift") & filters.private)
@@ -308,21 +301,10 @@ async def cmd_gengift(_, message):
     except ValueError:
         return await message.reply("❌ Invalid amount or qty.")
 
-    if amount <= 0 or qty <= 0:
-        return await message.reply("❌ Amount and qty must be greater than 0.")
-
     created = []
     for _ in range(qty):
         code = new_code(8) + "FRE"
-        gift_codes.insert_one(
-            {
-                "code": code,
-                "amount": amount,
-                "used": False,
-                "used_by": None,
-                "created_at": datetime.utcnow(),
-            }
-        )
+        gift_codes.insert_one({"code": code, "amount": amount, "used": False, "created_at": datetime.utcnow()})
         created.append(code)
 
     await message.reply("🎁 Gift code(s):\n" + "\n".join(created))
@@ -331,70 +313,54 @@ async def cmd_gengift(_, message):
 @bot.on_message(filters.command("redeemgift") & filters.private)
 async def cmd_redeemgift(_, message):
     ensure_user(message.from_user.id)
-
     if len(message.command) < 2:
         return await message.reply("Usage: /redeemgift CODE")
 
     code = message.command[1].strip().upper()
     gift = gift_codes.find_one({"code": code})
 
-    if not gift:
-        return await message.reply("❌ Invalid gift code.")
-    if gift.get("used"):
-        return await message.reply("❌ This gift code is already redeemed.")
+    if not gift or gift.get("used"):
+        return await message.reply("❌ Invalid or already used code.")
 
-    gift_codes.update_one(
-        {"_id": gift["_id"]},
-        {"$set": {"used": True, "used_by": message.from_user.id, "used_at": datetime.utcnow()}},
-    )
+    gift_codes.update_one({"_id": gift["_id"]}, {"$set": {"used": True, "used_by": message.from_user.id, "used_at": datetime.utcnow()}})
     users.update_one({"_id": message.from_user.id}, {"$inc": {"wallet": float(gift["amount"])}})
-
-    await message.reply(f"✅ Gift redeemed! ₹{fmt_money(gift['amount'])} added to your wallet.")
+    await message.reply(f"✅ Gift redeemed! ₹{fmt_money(gift['amount'])} added to wallet.")
 
 
 @bot.on_message(filters.command("onwithdraw") & filters.private)
 async def cmd_onwithdraw(_, message):
-    if not is_admin(message.from_user.id):
-        return await message.reply("❌ Admin only.")
+    if not is_admin(message.from_user.id): return
     settings.update_one({"_id": "withdraw"}, {"$set": {"enabled": True}}, upsert=True)
-    await message.reply("✅ Withdraw is ON for all users.")
+    await message.reply("✅ Withdraw is ON.")
 
 
 @bot.on_message(filters.command("offwithdraw") & filters.private)
 async def cmd_offwithdraw(_, message):
-    if not is_admin(message.from_user.id):
-        return await message.reply("❌ Admin only.")
+    if not is_admin(message.from_user.id): return
     settings.update_one({"_id": "withdraw"}, {"$set": {"enabled": False}}, upsert=True)
-    await message.reply("✅ Withdraw is OFF for all users.")
+    await message.reply("✅ Withdraw is OFF.")
 
 
 @bot.on_message(filters.command("ontime") & filters.private)
 async def cmd_ontime(_, message):
-    if not is_admin(message.from_user.id):
-        return await message.reply("❌ Admin only.")
+    if not is_admin(message.from_user.id): return
     settings.update_one({"_id": "time_gap"}, {"$set": {"enabled": True}}, upsert=True)
-    await message.reply("✅ /genlink 1-hour cooldown is ON.")
+    await message.reply("✅ Cooldown is ON.")
 
 
 @bot.on_message(filters.command("offtime") & filters.private)
 async def cmd_offtime(_, message):
-    if not is_admin(message.from_user.id):
-        return await message.reply("❌ Admin only.")
+    if not is_admin(message.from_user.id): return
     settings.update_one({"_id": "time_gap"}, {"$set": {"enabled": False}}, upsert=True)
-    await message.reply("✅ /genlink 1-hour cooldown is OFF.")
+    await message.reply("✅ Cooldown is OFF.")
 
 
-# ===== Health endpoint for Koyeb =====
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-
+        self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
 
 def run_health_server():
     HTTPServer(("0.0.0.0", 8080), HealthHandler).serve_forever()
-
 
 if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
