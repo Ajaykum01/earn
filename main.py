@@ -22,7 +22,6 @@ API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 MONGO_URL = os.getenv("MONGO_URL", "")
 ADMINS = [int(x) for x in os.getenv("ADMINS", "").split() if x.strip()]
-# Ensure this is an integer. Pyrogram requires -100 prefix for channels.
 WITHDRAW_CHANNEL = -1003624079737 
 TVK_API_TOKEN = "9986767adc94f9d0a46a66fe436a9ba577c74f1f"
 
@@ -89,32 +88,21 @@ bot = Client("earn-bot", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
 # ===== Auto Delete Handler =====
 @bot.on_message(filters.group & ~filters.service)
 async def auto_delete_handler(client, message):
-
     if not message.from_user:
         return
-
-    # 1. Don't delete if sender is Admin
     if is_admin(message.from_user.id):
         return
-
-    # 2. Don't delete bot's own messages
     me = await client.get_me()
     if message.from_user.id == me.id:
         return
-
-    # 3. Don't delete /genlink command (even with @botusername)
+    
+    # Logic: if it's NOT a genlink command, delete it
     if message.text:
-        text = message.text.lower()
-        if text.startswith("/genlink"):
-            return
-        if text.startswith(f"/genlink@{me.username.lower()}"):
+        cmd = message.text.lower()
+        if cmd.startswith("/genlink"):
             return
 
-    # Delete everything else
     try:
-        await message.delete()
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
         await message.delete()
     except Exception:
         pass
@@ -124,9 +112,6 @@ async def auto_delete_handler(client, message):
 async def cmd_start(_, message):
     ensure_user(message.from_user.id)
 
-    # ==============================
-    # STRICT TOKEN OWNER PROTECTION
-    # ==============================
     if len(message.command) > 1 and message.command[1].startswith("reward_"):
         token = message.command[1].split("reward_", 1)[1].strip()
         data = reward_tokens.find_one({"token": token})
@@ -134,39 +119,24 @@ async def cmd_start(_, message):
         if not data:
             return await message.reply("❌ Invalid token.")
 
-        # 🚨 NEW STRICT CHECK
+        # Ownership Protection
         if data.get("owner_id") != message.from_user.id:
-            return await message.reply("❌ This token is not yours.")
+            return await message.reply("❌ This is not your token. Only the person who generated it can claim it.")
 
         if data.get("used"):
             return await message.reply("❌ This token is already used.")
 
-        # Mark used
-        reward_tokens.update_one(
-            {"_id": data["_id"]},
-            {"$set": {"used": True, "used_at": datetime.utcnow()}}
-        )
-
-        users.update_one(
-            {"_id": message.from_user.id},
-            {"$inc": {"wallet": 1.5}}
-        )
+        reward_tokens.update_one({"_id": data["_id"]}, {"$set": {"used": True, "used_at": datetime.utcnow()}})
+        users.update_one({"_id": message.from_user.id}, {"$inc": {"wallet": 1.5}})
 
         return await message.reply("✅ Reward claimed! ₹1.5 added to your wallet.")
 
-    await message.reply(
-        "👋 Welcome to Earn Bot\n\n"
-        "Available Commands:\n"
-        "/start - Show welcome message\n"
-        "/genlink - Generate earning link\n"
-        "/wallet - Check your balance\n"
-        "/withdraw - Withdraw your money\n"
-        "/redeemgift CODE - Redeem gift code"
-    )
+    await message.reply("👋 Welcome! Use /genlink in the group to earn.")
 
 
-@bot.on_message(filters.command("genlink") & (filters.group | filters.private))
+@bot.on_message(filters.command("genlink"))
 async def cmd_genlink(client, message):
+    # This now handles both Private and Group because filters.command is broad
     ensure_user(message.from_user.id)
 
     user = users.find_one({"_id": message.from_user.id})
@@ -178,14 +148,12 @@ async def cmd_genlink(client, message):
         return await message.reply(f"⏳ Wait {mins} minutes before generating a new link.")
 
     token = new_code(10)
-    reward_tokens.insert_one(
-        {
-            "token": token,
-            "owner_id": message.from_user.id,
-            "used": False,
-            "created_at": datetime.utcnow(),
-        }
-    )
+    reward_tokens.insert_one({
+        "token": token,
+        "owner_id": message.from_user.id,
+        "used": False,
+        "created_at": datetime.utcnow(),
+    })
     users.update_one({"_id": message.from_user.id}, {"$set": {"last_gen": datetime.utcnow()}})
 
     me = await client.get_me()
@@ -193,14 +161,11 @@ async def cmd_genlink(client, message):
     short_link = shorten_tvk(deep_link)
 
     await message.reply(
-        "🔗 Your earning link is ready!\n"
-        "• Reward: ₹1.5 (one-time use)\n"
-        "• Only you can claim this link\n\n"
-        f"{short_link}",
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Open Link", url=short_link)]]
-        ),
-        disable_web_page_preview=True,
+        f"🔗 **Link Generated!**\n👤 **User:** {message.from_user.mention}\n\n"
+        f"Only you can claim this reward.\n\n"
+        f"👉 {short_link}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Claim ₹1.5", url=short_link)]]),
+        disable_web_page_preview=True
     )
 
 
@@ -215,204 +180,86 @@ async def cmd_wallet(_, message):
 async def cmd_withdraw(_, message):
     if not withdraw_enabled():
         return await message.reply("❌ Withdraw is currently disabled.")
-
     ensure_user(message.from_user.id)
     balance = users.find_one({"_id": message.from_user.id}).get("wallet", 0)
-    await message.reply(
-        f"💸 Withdraw Options\n"
-        f"Your Balance: ₹{fmt_money(balance)}\n\n"
-        "Use one of these:\n"
-        "/upiid yourupi@bank amount\n"
-        "/gmail yourmail@gmail.com amount\n\n"
-        "Example:\n"
-        "/upiid abcd@axl 100\n"
-        "/gmail abcd@gmail.com 100"
-    )
+    await message.reply(f"💸 Your Balance: ₹{fmt_money(balance)}\n\nUse `/upiid ID amount` or `/gmail MAIL amount` to withdraw.")
 
 async def create_withdraw_request(message, method: str, account: str, amount_raw: str):
-    if not withdraw_enabled():
-        return await message.reply("❌ Withdraw is currently disabled.")
-
+    if not withdraw_enabled(): return
     ensure_user(message.from_user.id)
-
     try:
         amount = float(amount_raw)
-    except ValueError:
+    except:
         return await message.reply("❌ Invalid amount.")
-
-    if amount <= 0:
-        return await message.reply("❌ Amount must be greater than 0.")
-
+    
     user = users.find_one({"_id": message.from_user.id})
-    balance = float(user.get("wallet", 0))
-    if balance < amount:
-        return await message.reply(f"❌ Insufficient balance. Your balance: ₹{fmt_money(balance)}")
+    if user.get("wallet", 0) < amount:
+        return await message.reply("❌ Insufficient balance.")
 
-    # Deduct money immediately
     users.update_one({"_id": message.from_user.id}, {"$inc": {"wallet": -amount}})
-
     request_id = new_code(12)
     withdraw_requests.insert_one({
-        "request_id": request_id,
-        "user_id": message.from_user.id,
-        "method": method,
-        "account": account,
-        "amount": amount,
-        "status": "pending",
-        "created_at": datetime.utcnow(),
+        "request_id": request_id, "user_id": message.from_user.id, "method": method,
+        "account": account, "amount": amount, "status": "pending", "created_at": datetime.utcnow()
     })
-
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Approve", callback_data=f"wd_approve:{request_id}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"wd_reject:{request_id}"),
-        ]
-    ])
-
-    text = (
-        "💳 **New Withdraw Request**\n\n"
-        f"👤 **User:** {message.from_user.mention} (`{message.from_user.id}`)\n"
-        f"💰 **Amount:** ₹{fmt_money(amount)}\n"
-        f"🛠 **Method:** {method}\n"
-        f"🏦 **Account:** `{account}`"
-    )
-
-    try:
-        await bot.send_message(
-            chat_id=int(WITHDRAW_CHANNEL), 
-            text=text, 
-            reply_markup=keyboard
-        )
-        await message.reply(f"✅ ₹{fmt_money(amount)} deducted. Request sent to admin.")
-    except Exception as e:
-        users.update_one({"_id": message.from_user.id}, {"$inc": {"wallet": amount}})
-        withdraw_requests.delete_one({"request_id": request_id})
-        print(f"CRITICAL ERROR SENDING TO CHANNEL: {e}") 
-        await message.reply("❌ Error sending request to admin channel. Money refunded to wallet.")
+    
+    text = f"💳 **Withdraw Request**\nUser: {message.from_user.id}\nAmount: ₹{amount}\nMethod: {method}\nAcc: {account}"
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Approve", callback_data=f"wd_approve:{request_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"wd_reject:{request_id}")]])
+    
+    await bot.send_message(WITHDRAW_CHANNEL, text, reply_markup=kb)
+    await message.reply("✅ Request sent to admin.")
 
 
 @bot.on_message(filters.command("upiid") & filters.private)
 async def cmd_upiid(_, message):
-    if len(message.command) < 3:
-        return await message.reply("Usage: /upiid yourupi@bank amount")
+    if len(message.command) < 3: return
     await create_withdraw_request(message, "UPI", message.command[1], message.command[2])
-
 
 @bot.on_message(filters.command("gmail") & filters.private)
 async def cmd_gmail(_, message):
-    if len(message.command) < 3:
-        return await message.reply("Usage: /gmail yourmail@gmail.com amount")
+    if len(message.command) < 3: return
     await create_withdraw_request(message, "GMAIL", message.command[1], message.command[2])
 
-
-@bot.on_callback_query(filters.regex(r"^wd_(approve|reject):"))
-async def withdraw_action(_, query):
-    if not query.from_user or not is_admin(query.from_user.id):
-        return await query.answer("Admins only.", show_alert=True)
-
-    action, request_id = query.data.split(":", 1)
-    req = withdraw_requests.find_one({"request_id": request_id})
-
-    if not req:
-        return await query.answer("Request not found.", show_alert=True)
-
-    if req.get("status") != "pending":
-        return await query.answer("Already processed.", show_alert=True)
-
-    if action == "wd_approve":
-        withdraw_requests.update_one(
-            {"_id": req["_id"]},
-            {"$set": {"status": "approved", "updated_at": datetime.utcnow()}},
-        )
-        await bot.send_message(req["user_id"], f"✅ Your withdraw request for ₹{fmt_money(req['amount'])} has been APPROVED.")
-        await query.message.edit_text(query.message.text + f"\n\n✅ Approved by {query.from_user.mention}.")
-        return await query.answer("Approved Successfully")
-
-    users.update_one({"_id": req["user_id"]}, {"$inc": {"wallet": float(req["amount"])}})
-    withdraw_requests.update_one(
-        {"_id": req["_id"]},
-        {"$set": {"status": "rejected", "updated_at": datetime.utcnow()}},
-    )
-    await bot.send_message(req["user_id"], f"❌ Your withdraw request for ₹{fmt_money(req['amount'])} was REJECTED. Money refunded to wallet.")
-    await query.message.edit_text(query.message.text + f"\n\n❌ Rejected & Refunded by {query.from_user.mention}.")
-    await query.answer("Rejected and Refunded")
-
-
-@bot.on_message(filters.command("gengift") & filters.private)
-async def cmd_gengift(_, message):
-    if not is_admin(message.from_user.id):
-        return await message.reply("❌ Admin only.")
-
-    if len(message.command) < 3:
-        return await message.reply("Usage: /gengift amount qty")
-
-    try:
-        amount = float(message.command[1])
-        qty = int(message.command[2])
-    except ValueError:
-        return await message.reply("❌ Invalid amount or qty.")
-
-    created = []
-    for _ in range(qty):
-        code = new_code(8) + "FRE"
-        gift_codes.insert_one({"code": code, "amount": amount, "used": False, "created_at": datetime.utcnow()})
-        created.append(code)
-
-    await message.reply("🎁 Gift code(s):\n" + "\n".join(created))
-
+@bot.on_callback_query(filters.regex(r"^wd_"))
+async def wd_cb(_, query):
+    if not is_admin(query.from_user.id): return
+    action, rid = query.data.split(":")
+    req = withdraw_requests.find_one({"request_id": rid})
+    if not req or req["status"] != "pending": return
+    
+    if "approve" in action:
+        withdraw_requests.update_one({"request_id": rid}, {"$set": {"status": "approved"}})
+        await bot.send_message(req["user_id"], "✅ Withdrawal Approved!")
+    else:
+        users.update_one({"_id": req["user_id"]}, {"$inc": {"wallet": req["amount"]}})
+        withdraw_requests.update_one({"request_id": rid}, {"$set": {"status": "rejected"}})
+        await bot.send_message(req["user_id"], "❌ Withdrawal Rejected. Refunded.")
+    await query.message.edit_text(query.message.text + "\n\nDONE")
 
 @bot.on_message(filters.command("redeemgift") & filters.private)
 async def cmd_redeemgift(_, message):
     ensure_user(message.from_user.id)
-    if len(message.command) < 2:
-        return await message.reply("Usage: /redeemgift CODE")
+    if len(message.command) < 2: return
+    code = message.command[1].upper()
+    gift = gift_codes.find_one({"code": code, "used": False})
+    if not gift: return await message.reply("❌ Invalid code.")
+    gift_codes.update_one({"_id": gift["_id"]}, {"$set": {"used": True}})
+    users.update_one({"_id": message.from_user.id}, {"$inc": {"wallet": gift["amount"]}})
+    await message.reply(f"✅ Redeemed ₹{gift['amount']}")
 
-    code = message.command[1].strip().upper()
-    gift = gift_codes.find_one({"code": code})
-
-    if not gift or gift.get("used"):
-        return await message.reply("❌ Invalid or already used code.")
-
-    gift_codes.update_one({"_id": gift["_id"]}, {"$set": {"used": True, "used_by": message.from_user.id, "used_at": datetime.utcnow()}})
-    users.update_one({"_id": message.from_user.id}, {"$inc": {"wallet": float(gift["amount"])}})
-    await message.reply(f"✅ Gift redeemed! ₹{fmt_money(gift['amount'])} added to wallet.")
-
-
-@bot.on_message(filters.command("onwithdraw") & filters.private)
-async def cmd_onwithdraw(_, message):
+@bot.on_message(filters.command(["onwithdraw", "offwithdraw", "ontime", "offtime"]) & filters.private)
+async def admin_cmds(_, message):
     if not is_admin(message.from_user.id): return
-    settings.update_one({"_id": "withdraw"}, {"$set": {"enabled": True}}, upsert=True)
-    await message.reply("✅ Withdraw is ON.")
-
-
-@bot.on_message(filters.command("offwithdraw") & filters.private)
-async def cmd_offwithdraw(_, message):
-    if not is_admin(message.from_user.id): return
-    settings.update_one({"_id": "withdraw"}, {"$set": {"enabled": False}}, upsert=True)
-    await message.reply("✅ Withdraw is OFF.")
-
-
-@bot.on_message(filters.command("ontime") & filters.private)
-async def cmd_ontime(_, message):
-    if not is_admin(message.from_user.id): return
-    settings.update_one({"_id": "time_gap"}, {"$set": {"enabled": True}}, upsert=True)
-    await message.reply("✅ Cooldown is ON.")
-
-
-@bot.on_message(filters.command("offtime") & filters.private)
-async def cmd_offtime(_, message):
-    if not is_admin(message.from_user.id): return
-    settings.update_one({"_id": "time_gap"}, {"$set": {"enabled": False}}, upsert=True)
-    await message.reply("✅ Cooldown is OFF.")
-
+    cmd = message.command[0]
+    target = "withdraw" if "withdraw" in cmd else "time_gap"
+    val = "on" in cmd
+    settings.update_one({"_id": target}, {"$set": {"enabled": val}}, upsert=True)
+    await message.reply(f"✅ {target} is now {val}")
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
 
-def run_health_server():
-    HTTPServer(("0.0.0.0", 8080), HealthHandler).serve_forever()
-
 if __name__ == "__main__":
-    threading.Thread(target=run_health_server, daemon=True).start()
+    threading.Thread(target=lambda: HTTPServer(("0.0.0.0", 8080), HealthHandler).serve_forever(), daemon=True).start()
     bot.run()
