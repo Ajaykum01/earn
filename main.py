@@ -287,13 +287,41 @@ async def cmd_gengift(_, message):
 @bot.on_message(filters.command("redeemgift") & filters.private)
 async def cmd_redeemgift(_, message):
     ensure_user(message.from_user.id)
-    if len(message.command) < 2: return
+
+    if len(message.command) < 2:
+        return await message.reply("Usage: /redeemgift CODE")
+
     code = message.command[1].strip().upper()
-    gift = gift_codes.find_one({"code": code, "used": False})
-    if not gift: return await message.reply("❌ Invalid code.")
-    gift_codes.update_one({"_id": gift["_id"]}, {"$set": {"used": True}})
-    users.update_one({"_id": message.from_user.id}, {"$inc": {"wallet": float(gift["amount"])}})
-    await message.reply(f"✅ Redeemed ₹{gift['amount']}")
+
+    # 🔥 FIXED: find by code only
+    gift = gift_codes.find_one({"code": code})
+
+    if not gift:
+        return await message.reply("❌ Invalid gift code.")
+
+    if gift.get("used"):
+        return await message.reply("❌ This gift code is already used.")
+
+    # Mark as used
+    gift_codes.update_one(
+        {"_id": gift["_id"]},
+        {
+            "$set": {
+                "used": True,
+                "used_by": message.from_user.id,
+                "used_at": datetime.utcnow()
+            }
+        }
+    )
+
+    # Add balance
+    users.update_one(
+        {"_id": message.from_user.id},
+        {"$inc": {"wallet": float(gift["amount"])}}
+    )
+
+    await message.reply(f"✅ Gift redeemed! ₹{fmt_money(float(gift['amount']))} added to your wallet.")
+
 
 
 @bot.on_message(filters.command(["onwithdraw", "offwithdraw", "ontime", "offtime"]) & filters.private)
