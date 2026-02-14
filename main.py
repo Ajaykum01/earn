@@ -153,15 +153,15 @@ async def cmd_genlink(client, message):
     deep_link = f"https://t.me/{me.username}?start=reward_{token}"
     short_link = shorten_tvk(deep_link)
 
-await message.reply(
+    await message.reply(
     "🔗 Your earning link is ready!\n"
     "• Reward: ₹1.5 (one-time use)\n"
     "• Only you can claim this link\n\n"
     f"{short_link}",
     reply_markup=InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("Open Link", url=short_link)],
-            [InlineKeyboardButton("How to Open Link", url="https://t.me/kpslinkteam/62")]
+            [InlineKeyboardButton("🔓 Open Link", url=short_link)],
+            [InlineKeyboardButton("📖 How To Open Link", url="https://t.me/kpslinkteam/62")]
         ]
     ),
     disable_web_page_preview=True,
