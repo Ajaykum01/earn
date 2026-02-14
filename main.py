@@ -157,7 +157,7 @@ async def cmd_genlink(client, message):
         "🔗 Your earning link is ready!\n"
         "• Reward: ₹1.5 (one-time use)\n"
         "• Only you can claim this link\n\n"
-        f"{short_link}",
+        "• HOW TO OPEN LINK:- https://t.me/kpslinkteam/62\n\n"
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("Open Link", url=short_link)]]
         ),
