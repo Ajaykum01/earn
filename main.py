@@ -175,7 +175,7 @@ async def cmd_wallet(_, message):
 @bot.on_message(filters.command("withdraw") & filters.private)
 async def cmd_withdraw(_, message):
     if not withdraw_enabled():
-        return await message.reply("❌ Withdraw is currently disabled.")
+        return await message.reply("❌ Withdraw is currently disabled.Its Open on Every Month Starting 1.xx.202x - 3.xx.202x")
 
     ensure_user(message.from_user.id)
     balance = users.find_one({"_id": message.from_user.id}).get("wallet", 0)
@@ -183,13 +183,13 @@ async def cmd_withdraw(_, message):
         f"💸 Withdraw Options\n"
         f"Your Balance: ₹{fmt_money(balance)}\n\n"
         "Use one of these:\n"
-        "/upiid yourupi@bank amount\n"
-        "/gmail yourmail@gmail.com amount"
+        "UPI PAYMENT = /upiid yourupi@bank amount\n"
+        "REDEEM CODE PAYMENT = /gmail yourmail@gmail.com amount"
     )
 
 async def create_withdraw_request(message, method: str, account: str, amount_raw: str):
     if not withdraw_enabled():
-        return await message.reply("❌ Withdraw is currently disabled.")
+        return await message.reply("❌ Withdraw is currently disabled.Withdraw is currently disabled.Its Open on Every Month Starting 1.xx.202x - 3.xx.202x")
 
     ensure_user(message.from_user.id)
 
