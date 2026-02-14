@@ -154,15 +154,17 @@ async def cmd_genlink(client, message):
     short_link = shorten_tvk(deep_link)
 
     await message.reply(
-        "🔗 Your earning link is ready!\n"
-        "• Reward: ₹1.5 (one-time use)\n"
-        "• Only you can claim this link\n\n"
-        "• HOW TO OPEN LINK:- https://t.me/kpslinkteam/62\n\n"
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Open Link", url=short_link)]]
-        ),
-        disable_web_page_preview=True,
-    )
+    "🔗 **Your earning link is ready!**\n\n"
+    "• **Reward:** ₹1.5 (one-time use)\n"
+    "• **Access:** Only you can claim this\n"
+    "• **Tutorial:** [How to Open Link](https://t.me/kpslinkteam/62)\n\n"
+    "⚠️ *Make sure to follow the tutorial if you're stuck!*",
+    reply_markup=InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🚀 Open Link", url=short_link)]]
+    ),
+    disable_web_page_preview=True,
+    parse_mode="Markdown" # Added to make the bold/links work
+)
 
 
 @bot.on_message(filters.command("wallet") & filters.private)
