@@ -120,19 +120,33 @@ async def auto_delete_handler(client, message):
 async def cmd_start(_, message):
     ensure_user(message.from_user.id)
 
+    # ==============================
+    # STRICT TOKEN OWNER PROTECTION
+    # ==============================
     if len(message.command) > 1 and message.command[1].startswith("reward_"):
         token = message.command[1].split("reward_", 1)[1].strip()
         data = reward_tokens.find_one({"token": token})
 
         if not data:
-            return await message.reply("❌ Invalid link.")
-        if data.get("used"):
-            return await message.reply("❌ This link is already used.")
-        if data.get("owner_id") != message.from_user.id:
-            return await message.reply("❌ This link is only for the user who generated it.")
+            return await message.reply("❌ Invalid token.")
 
-        reward_tokens.update_one({"_id": data["_id"]}, {"$set": {"used": True, "used_at": datetime.utcnow()}})
-        users.update_one({"_id": message.from_user.id}, {"$inc": {"wallet": 1.5}})
+        # 🚨 NEW STRICT CHECK
+        if data.get("owner_id") != message.from_user.id:
+            return await message.reply("❌ This token is not yours.")
+
+        if data.get("used"):
+            return await message.reply("❌ This token is already used.")
+
+        # Mark used
+        reward_tokens.update_one(
+            {"_id": data["_id"]},
+            {"$set": {"used": True, "used_at": datetime.utcnow()}}
+        )
+
+        users.update_one(
+            {"_id": message.from_user.id},
+            {"$inc": {"wallet": 1.5}}
+        )
 
         return await message.reply("✅ Reward claimed! ₹1.5 added to your wallet.")
 
