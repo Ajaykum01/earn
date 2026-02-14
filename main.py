@@ -89,22 +89,26 @@ bot = Client("earn-bot", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
 # ===== Auto Delete Handler =====
 @bot.on_message(filters.group & ~filters.service)
 async def auto_delete_handler(client, message):
-    # Skip if message has no text (like photos without captions) or no from_user
+
     if not message.from_user:
         return
 
-    # 1. Don't delete if sender is an Admin
+    # 1. Don't delete if sender is Admin
     if is_admin(message.from_user.id):
         return
 
-    # 2. Don't delete if it's the bot itself (though filters handle most cases)
+    # 2. Don't delete bot's own messages
     me = await client.get_me()
     if message.from_user.id == me.id:
         return
 
-    # 3. Don't delete /genlink command
-    if message.text and message.text.lower().startswith("/genlink"):
-        return
+    # 3. Don't delete /genlink command (even with @botusername)
+    if message.text:
+        text = message.text.lower()
+        if text.startswith("/genlink"):
+            return
+        if text.startswith(f"/genlink@{me.username.lower()}"):
+            return
 
     # Delete everything else
     try:
